@@ -380,30 +380,36 @@ pub fn getLineSnippet(source: []const u8, row: u32) []const u8 {
 
 pub fn getLogicalOperator(node: bindings.TSNode, source: []const u8, lang: Language) ?[]const u8 {
     const t = node.getType();
-    if (lang == .python) {
-        if (std.mem.eql(u8, t, "boolean_operator")) {
-            var i: u32 = 0;
-            const count = node.childCount();
-            while (i < count) : (i += 1) {
-                const ch = node.child(i);
-                const slice = ch.slice(source);
-                if (std.mem.eql(u8, slice, "and") or std.mem.eql(u8, slice, "or")) {
-                    return slice;
-                }
-            }
-        }
-        return null;
+    if (lang == .python and std.mem.eql(u8, t, "boolean_operator")) {
+        return findPythonLogicalOperator(node, source);
     }
-
     if (std.mem.eql(u8, t, "binary_expression")) {
-        var i: u32 = 0;
-        const count = node.childCount();
-        while (i < count) : (i += 1) {
-            const ch = node.child(i);
-            const slice = ch.slice(source);
-            if (std.mem.eql(u8, slice, "&&") or std.mem.eql(u8, slice, "||")) {
-                return slice;
-            }
+        return findBinaryLogicalOperator(node, source);
+    }
+    return null;
+}
+
+fn findPythonLogicalOperator(node: bindings.TSNode, source: []const u8) ?[]const u8 {
+    var i: u32 = 0;
+    const count = node.childCount();
+    while (i < count) : (i += 1) {
+        const ch = node.child(i);
+        const slice = ch.slice(source);
+        if (std.mem.eql(u8, slice, "and") or std.mem.eql(u8, slice, "or")) {
+            return slice;
+        }
+    }
+    return null;
+}
+
+fn findBinaryLogicalOperator(node: bindings.TSNode, source: []const u8) ?[]const u8 {
+    var i: u32 = 0;
+    const count = node.childCount();
+    while (i < count) : (i += 1) {
+        const ch = node.child(i);
+        const slice = ch.slice(source);
+        if (std.mem.eql(u8, slice, "&&") or std.mem.eql(u8, slice, "||")) {
+            return slice;
         }
     }
     return null;
