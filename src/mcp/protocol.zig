@@ -22,49 +22,49 @@ pub const TOOLS = [_]ToolDefinition{
     .{
         .name = "inspect_evidence",
         .description = "Cross-references noise, cognitive complexity, and blast radius into a prioritized, state-locked Evidence Contract pack.",
-        .input_schema_json = 
+        .input_schema_json =
         \\{"type":"object","properties":{"path":{"type":"string","description":"Path of the file to inspect."},"root":{"type":"string","description":"Project root directory (default: .)."},"page":{"type":"integer","description":"Page number for pagination (default: 1)."},"page_size":{"type":"integer","description":"Number of findings per page (default: 10)."}},"required":["path"]}
         ,
     },
     .{
         .name = "audit_noise",
         .description = "Audits files or directories against nesting > 2 levels, long inline closures, raw boolean expressions, and commented code.",
-        .input_schema_json = 
+        .input_schema_json =
         \\{"type":"object","properties":{"path":{"type":"string","description":"Relative or absolute path of the file or directory to audit."},"format":{"type":"string","enum":["text","json","sarif","evidence","compact"],"description":"Output format: text (default), json, sarif, evidence, or compact."},"config":{"type":"string","description":"Optional path to custom .zero-noise.json configuration file."},"root":{"type":"string","description":"Project root directory (used when format is evidence)."},"page":{"type":"integer","description":"Page number for pagination (used when format is evidence)."},"page_size":{"type":"integer","description":"Number of findings per page (used when format is evidence)."}},"required":["path"]}
         ,
     },
     .{
         .name = "refactor_helper",
         .description = "Detects DRY extraction candidates (repeated literals) and boolean algebraic simplification opportunities.",
-        .input_schema_json = 
+        .input_schema_json =
         \\{"type":"object","properties":{"filepath":{"type":"string","description":"Path of the file to analyze."}},"required":["filepath"]}
         ,
     },
     .{
         .name = "complexity",
         .description = "Calculates SonarSource Cognitive Complexity per function.",
-        .input_schema_json = 
+        .input_schema_json =
         \\{"type":"object","properties":{"path":{"type":"string","description":"Path to file or directory."},"threshold":{"type":"integer","description":"Cognitive complexity threshold (default 15)."},"format":{"type":"string","enum":["text","json","sarif","compact"],"description":"Output format: text (default), json, sarif, or compact."}},"required":["path"]}
         ,
     },
     .{
         .name = "blast_radius",
         .description = "Analyzes symbol usages, definitions, and blast radius risk across a codebase.",
-        .input_schema_json = 
+        .input_schema_json =
         \\{"type":"object","properties":{"symbol":{"type":"string","description":"Symbol name to analyze."},"root":{"type":"string","description":"Project root directory (default .)."},"format":{"type":"string","enum":["text","json","compact"],"description":"Output format: text (default), json, or compact."}},"required":["symbol"]}
         ,
     },
     .{
         .name = "safe_refactor",
         .description = "Test-bracketed safe refactoring runner with automatic rollback on failure and state-lock hash protection.",
-        .input_schema_json = 
+        .input_schema_json =
         \\{"type":"object","properties":{"filepath":{"type":"string","description":"Path of the file to refactor."},"expected_hash":{"type":"string","description":"Expected SHA-256 state lock hash of target file."},"max_blast_risk":{"type":"string","enum":["low","medium","high"],"description":"Maximum allowed blast radius risk level."},"force":{"type":"boolean","description":"Bypass blast radius gate."},"test_cmd":{"type":"string","description":"Optional test command to run for verification."},"fix":{"type":"boolean","description":"Apply algebraic simplifications."},"patch_file":{"type":"string","description":"Optional path to unified diff patch file to apply."},"candidate_content":{"type":"string","description":"Optional candidate replacement content."},"format":{"type":"string","enum":["text","json","compact"],"description":"Output format: text (default), json, or compact."}},"required":["filepath"]}
         ,
     },
     .{
         .name = "evaluate_rules",
         .description = "Evaluates declarative linting rules against a target path.",
-        .input_schema_json = 
+        .input_schema_json =
         \\{"type":"object","properties":{"path":{"type":"string","description":"Target file or directory path."},"rules":{"type":"string","description":"Optional path to declarative rules JSON file."},"format":{"type":"string","enum":["text","json","compact"],"description":"Output format: text (default), json, or compact."}},"required":["path"]}
         ,
     },
@@ -109,7 +109,7 @@ pub fn buildInitializeResultJson(allocator: std.mem.Allocator) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    try out.print(allocator, 
+    try out.print(allocator,
         \\{{"protocolVersion":"{s}","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"{s}","version":"{s}"}}}}
     , .{ PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION });
     return out.toOwnedSlice(allocator);
@@ -201,4 +201,3 @@ test "protocol request id escaping" {
     defer parsed.deinit();
     try std.testing.expectEqualStrings("req_\"1\"_test", parsed.value.object.get("id").?.string);
 }
-

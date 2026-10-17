@@ -497,4 +497,3 @@ pub fn isOperatorChar(ch: u8) bool {
         ch == '*' or ch == '/' or ch == '%' or ch == '<' or
         ch == '>' or ch == '~' or ch == '=';
 }
-

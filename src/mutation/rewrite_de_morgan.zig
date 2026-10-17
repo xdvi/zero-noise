@@ -14,7 +14,6 @@ const parseDeMorganInner = common.parseDeMorganInner;
 const shouldWrapDeMorgan = common.shouldWrapDeMorgan;
 const isOperatorChar = common.isOperatorChar;
 
-
 pub const RewriteResult = common.RewriteResult;
 
 pub fn rewriteDeMorgan(allocator: std.mem.Allocator, source: []const u8) !RewriteResult {
@@ -63,4 +62,3 @@ pub fn rewriteDeMorgan(allocator: std.mem.Allocator, source: []const u8) !Rewrit
         .changes_count = changes,
     };
 }
-

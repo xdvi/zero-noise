@@ -44,7 +44,6 @@ pub fn executeComplexity(allocator: std.mem.Allocator, args: []const []const u8,
         try json_args.object.put(allocator, "threshold", std.json.Value{ .integer = threshold });
         try json_args.object.put(allocator, "format", std.json.Value{ .string = format });
 
-
         const res = try app.executeToolCall(allocator, "complexity", json_args);
         defer res.deinit(allocator);
 
@@ -81,4 +80,3 @@ test "complexity cli execution within threshold returns exit code 0" {
     try std.testing.expectEqual(0, code);
     try std.testing.expect(std.mem.indexOf(u8, out_list.items, "0 (threshold: 100)") != null);
 }
-

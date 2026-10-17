@@ -14,7 +14,6 @@ const parseDeMorganInner = common.parseDeMorganInner;
 const shouldWrapDeMorgan = common.shouldWrapDeMorgan;
 const isOperatorChar = common.isOperatorChar;
 
-
 pub const RewriteResult = common.RewriteResult;
 
 pub fn rewriteDoubleNegation(allocator: std.mem.Allocator, source: []const u8) !RewriteResult {
@@ -68,4 +67,3 @@ pub fn rewriteDoubleNegation(allocator: std.mem.Allocator, source: []const u8) !
         .changes_count = changes,
     };
 }
-

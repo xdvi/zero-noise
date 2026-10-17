@@ -42,7 +42,6 @@ pub fn executeBlast(allocator: std.mem.Allocator, args: []const []const u8, out_
     try json_args.object.put(allocator, "root", std.json.Value{ .string = root });
     try json_args.object.put(allocator, "format", std.json.Value{ .string = format });
 
-
     const res = try app.executeToolCall(allocator, "blast_radius", json_args);
     defer res.deinit(allocator);
 
@@ -68,4 +67,3 @@ test "blast cli execution" {
     const err_code = try executeBlast(allocator, &err_args, &out_list);
     try std.testing.expectEqual(1, err_code);
 }
-

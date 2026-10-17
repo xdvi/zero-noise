@@ -1,11 +1,12 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const app = @import("app.zig");
+const deps_mod = @import("deps.zig");
 
-
-pub fn handleJsonRpcLine(
+pub fn handleJsonRpcLineWithDeps(
     allocator: std.mem.Allocator,
     line: []const u8,
+    deps_ptr: *const deps_mod.Deps,
 ) !?[]const u8 {
     const trimmed = std.mem.trim(u8, line, " \t\r\n");
     if (trimmed.len == 0) return null;
@@ -85,7 +86,7 @@ pub fn handleJsonRpcLine(
             }
         }
 
-        const tool_result = app.executeToolCall(allocator, tool_name, arguments) catch |err| {
+        const tool_result = app.executeToolCallWithDeps(allocator, tool_name, arguments, deps_ptr) catch |err| {
             const err_msg = try std.fmt.allocPrint(allocator, "Tool execution error: {s}", .{@errorName(err)});
             defer allocator.free(err_msg);
             const call_res = try protocol.buildToolCallResultJson(allocator, err_msg, true);
@@ -126,7 +127,8 @@ pub fn run(allocator: std.mem.Allocator) !void {
         defer req_arena.deinit();
         const req_alloc = req_arena.allocator();
 
-        const maybe_resp = handleJsonRpcLine(req_alloc, line) catch |err| {
+        const default_deps = deps_mod.defaultDeps();
+        const maybe_resp = handleJsonRpcLineWithDeps(req_alloc, line, &default_deps) catch |err| {
             const err_resp = protocol.buildErrorResponseJson(req_alloc, .null_id, protocol.ErrorCodes.InternalError, @errorName(err)) catch null;
             if (err_resp) |resp| {
                 stdout.writeStreamingAll(io, resp) catch {};
@@ -139,4 +141,12 @@ pub fn run(allocator: std.mem.Allocator) !void {
             try stdout.writeStreamingAll(io, "\n");
         }
     }
+}
+
+pub fn handleJsonRpcLine(
+    allocator: std.mem.Allocator,
+    line: []const u8,
+) !?[]const u8 {
+    const default = deps_mod.defaultDeps();
+    return handleJsonRpcLineWithDeps(allocator, line, &default);
 }

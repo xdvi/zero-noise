@@ -18,6 +18,10 @@ pub const analysis = struct {
 
 pub const mutation = struct {
     pub const runner = @import("mutation/runner.zig");
+    pub const io = @import("mutation/io.zig");
+    pub const patch = @import("mutation/patch.zig");
+    pub const syntax = @import("mutation/syntax.zig");
+    pub const test_runner = @import("mutation/test_runner.zig");
     pub const rewriter = @import("mutation/rewriter.zig");
 };
 
@@ -26,6 +30,19 @@ pub const mcp = struct {
     pub const compact = @import("mcp/compact.zig");
     pub const server = @import("mcp/server.zig");
     pub const app = @import("mcp/app.zig");
+    pub const common = @import("mcp/common.zig");
+    pub const format = @import("mcp/format.zig");
+    pub const risk = @import("mcp/risk.zig");
+    pub const deps = @import("mcp/deps.zig");
+    pub const tools = struct {
+        pub const audit_noise = @import("mcp/tools/audit_noise.zig");
+        pub const refactor_helper = @import("mcp/tools/refactor_helper.zig");
+        pub const blast_radius = @import("mcp/tools/blast_radius.zig");
+        pub const inspect_evidence = @import("mcp/tools/inspect_evidence.zig");
+        pub const safe_refactor = @import("mcp/tools/safe_refactor.zig");
+        pub const complexity = @import("mcp/tools/complexity.zig");
+        pub const evaluate_rules = @import("mcp/tools/evaluate_rules.zig");
+    };
 };
 
 pub const cli = struct {
@@ -49,8 +66,23 @@ test {
     _ = @import("analysis/blast.zig");
     _ = @import("mutation/rewriter.zig");
     _ = @import("mutation/runner.zig");
+    _ = @import("mutation/io.zig");
+    _ = @import("mutation/patch.zig");
+    _ = @import("mutation/syntax.zig");
+    _ = @import("mutation/test_runner.zig");
     _ = @import("mcp/protocol.zig");
     _ = @import("mcp/compact.zig");
+    _ = @import("mcp/common.zig");
+    _ = @import("mcp/format.zig");
+    _ = @import("mcp/risk.zig");
+    _ = @import("mcp/deps.zig");
+    _ = @import("mcp/tools/audit_noise.zig");
+    _ = @import("mcp/tools/refactor_helper.zig");
+    _ = @import("mcp/tools/blast_radius.zig");
+    _ = @import("mcp/tools/inspect_evidence.zig");
+    _ = @import("mcp/tools/safe_refactor.zig");
+    _ = @import("mcp/tools/complexity.zig");
+    _ = @import("mcp/tools/evaluate_rules.zig");
     _ = @import("mcp/server.zig");
     _ = @import("cli/audit.zig");
     _ = @import("cli/complexity.zig");

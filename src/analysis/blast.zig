@@ -375,8 +375,9 @@ fn isDefinitionLineSnippet(line: []const u8, symbol: []const u8, lang: grammars.
     var rest = std.mem.trim(u8, line, " \t\r");
 
     const modifiers = [_][]const u8{
-        "export default ", "export ", "public ", "private ", "protected ",
-        "internal ", "static ", "async ", "pub(crate) ", "pub(super) ", "pub ",
+        "export default ", "export ", "public ", "private ",    "protected ",
+        "internal ",       "static ", "async ",  "pub(crate) ", "pub(super) ",
+        "pub ",
     };
     var stripped = true;
     while (stripped) {
@@ -391,8 +392,9 @@ fn isDefinitionLineSnippet(line: []const u8, symbol: []const u8, lang: grammars.
     }
 
     const decl_keywords = [_][]const u8{
-        "func ", "function ", "def ", "class ", "interface ", "type ",
-        "fn ", "struct ", "enum ", "trait ", "const ", "let ", "var ",
+        "func ", "function ", "def ",  "class ", "interface ", "type ",
+        "fn ",   "struct ",   "enum ", "trait ", "const ",     "let ",
+        "var ",
     };
     var matched = false;
     for (decl_keywords) |kw| {

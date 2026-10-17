@@ -121,17 +121,6 @@ fn isInsideCallArguments(node: bindings.TSNode) bool {
     return false;
 }
 
-fn isIfOrWhile(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .go => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "for_statement"),
-        .rust => std.mem.eql(u8, node_type, "if_expression") or std.mem.eql(u8, node_type, "while_expression"),
-        .python => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "elif_clause") or std.mem.eql(u8, node_type, "while_statement"),
-        .typescript, .tsx => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "while_statement") or std.mem.eql(u8, node_type, "do_statement"),
-        .c_sharp => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "while_statement") or std.mem.eql(u8, node_type, "do_statement"),
-        .unknown => false,
-    };
-}
-
 fn countLogicalOperators(node: bindings.TSNode, source: []const u8, lang: grammars.Language) u32 {
     if (node.isNull()) return 0;
     const t = node.getType();
@@ -176,7 +165,7 @@ fn walkNoise(
     if (lang.isFunctionNode(node) or isArrowFunctionAssignedToVariable(node) or lang.isClosure(t)) {
         next_depth = 0;
     } else if (lang.isControl(t)) {
-        const is_elif = grammars.isElseIfNode(node, lang);
+        const is_elif = lang.isElseIfNode(node);
         if (!is_elif) {
             next_depth = depth + 1;
             if (next_depth > config.max_nesting) {
@@ -224,7 +213,7 @@ fn walkNoise(
     }
 
     // Check raw compound boolean conditions in if/while (3+ conditions chained with &&/||)
-    if (isIfOrWhile(t, lang)) {
+    if (lang.isIfOrWhile(t)) {
         const cond = node.childByFieldName("condition");
         if (!cond.isNull()) {
             if (countLogicalOperators(cond, source, lang) >= 2) {
@@ -398,16 +387,13 @@ fn isCodeLine(trimmed: []const u8) bool {
     if (trimmed.len == 0) return false;
 
     const code_prefixes = [_][]const u8{
-        "if ", "if(", "elif ", "elif(", "else if", "else {", "else:",
-        "for ", "for(", "while ", "while(", "do {",
-        "switch ", "switch(", "case ",
-        "def ", "func ", "function ", "function(", "fn ", "pub fn ",
-        "class ", "struct ", "interface ", "enum ",
-        "const ", "let ", "var ", "val ",
-        "return ", "return;", "yield ", "throw ",
-        "import ", "export ", "using ", "package ",
-        "try {", "catch ", "catch(", "finally {", "except ", "except:",
-        "console.", "fmt.", "print(", "println(",
+        "if ",     "if(",      "elif ",      "elif(",     "else if",   "else {",    "else:",
+        "for ",    "for(",     "while ",     "while(",    "do {",      "switch ",   "switch(",
+        "case ",   "def ",     "func ",      "function ", "function(", "fn ",       "pub fn ",
+        "class ",  "struct ",  "interface ", "enum ",     "const ",    "let ",      "var ",
+        "val ",    "return ",  "return;",    "yield ",    "throw ",    "import ",   "export ",
+        "using ",  "package ", "try {",      "catch ",    "catch(",    "finally {", "except ",
+        "except:", "console.", "fmt.",       "print(",    "println(",
     };
 
     for (code_prefixes) |prefix| {
@@ -684,7 +670,6 @@ fn isStringLiteralNode(node_type: []const u8) bool {
         std.mem.eql(u8, node_type, "verbatim_string_literal");
 }
 
-
 test "auditNoise - Go nesting > 2" {
     const source =
         \\package main
@@ -771,7 +756,6 @@ test "auditNoise - dirty typescript fixture" {
     const source = buf[0..n];
 
     const findings = try auditNoise(std.testing.allocator, source, .typescript);
-
 
     defer {
         for (findings) |f| {
@@ -1244,5 +1228,3 @@ test "auditNoise - closures reset nesting depth internally" {
     }
     try std.testing.expectEqual(@as(usize, 0), excessive_count);
 }
-
-

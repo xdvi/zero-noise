@@ -42,7 +42,7 @@ fn collectFunctions(
 ) !void {
     if (node.isNull()) return;
 
-    if (isFunctionNode(node, lang)) {
+    if (lang.isFunctionNode(node)) {
         const name = getFunctionName(node, source, lang);
         const start = node.startPoint();
         const end = node.endPoint();
@@ -71,10 +71,6 @@ fn collectFunctions(
     while (i < count) : (i += 1) {
         try collectFunctions(allocator, node.child(i), source, lang, records);
     }
-}
-
-fn isFunctionNode(node: bindings.TSNode, lang: grammars.Language) bool {
-    return grammars.isFunctionNode(node, lang);
 }
 
 fn getFunctionName(node: bindings.TSNode, source: []const u8, lang: grammars.Language) []const u8 {
@@ -143,7 +139,7 @@ fn walkNode(
 ) void {
     if (node.isNull()) return;
 
-    if (!is_root and isFunctionNode(node, lang)) return;
+    if (!is_root and lang.isFunctionNode(node)) return;
 
     const t = node.getType();
 
@@ -152,29 +148,29 @@ fn walkNode(
 
     var next_nesting = nesting;
 
-    if (isIfNode(t, lang)) {
-        if (isElseIf(node, lang)) {
+    if (lang.isIfNode(t)) {
+        if (lang.isElseIfNode(node)) {
             score.* += 1;
         } else {
             score.* += 1 + nesting;
         }
         next_nesting = nesting + 1;
-    } else if (isElseNode(node, source, lang)) {
+    } else if (lang.isElseNode(node)) {
         score.* += 1;
         next_nesting = nesting + 1;
-    } else if (isTernaryNode(t, lang)) {
+    } else if (lang.isTernaryNode(t)) {
         score.* += 1 + nesting;
         next_nesting = nesting + 1;
-    } else if (isSwitchNode(t, lang)) {
+    } else if (lang.isSwitchNode(t)) {
         score.* += 1 + nesting;
         next_nesting = nesting + 1;
-    } else if (isLoopNode(t, lang)) {
+    } else if (lang.isLoopNode(t)) {
         score.* += 1 + nesting;
         next_nesting = nesting + 1;
-    } else if (isCatchNode(t, lang)) {
+    } else if (lang.isCatchNode(t)) {
         score.* += 1 + nesting;
         next_nesting = nesting + 1;
-    } else if (isClosureNode(t, lang)) {
+    } else if (lang.isClosure(t)) {
         if (!is_root) {
             next_nesting = nesting + 1;
         }
@@ -204,112 +200,6 @@ fn isIgnoredNode(node_type: []const u8) bool {
     return std.mem.eql(u8, node_type, "nullable_type") or
         std.mem.eql(u8, node_type, "conditional_access_expression") or
         std.mem.eql(u8, node_type, "optional_chain");
-}
-
-fn isIfNode(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .go => std.mem.eql(u8, node_type, "if_statement"),
-        .rust => std.mem.eql(u8, node_type, "if_expression"),
-        .python => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "elif_clause"),
-        .typescript, .tsx => std.mem.eql(u8, node_type, "if_statement"),
-        .c_sharp => std.mem.eql(u8, node_type, "if_statement"),
-        .unknown => false,
-    };
-}
-
-fn isElseIf(node: bindings.TSNode, lang: grammars.Language) bool {
-    return grammars.isElseIfNode(node, lang);
-}
-
-fn isElseNode(node: bindings.TSNode, source: []const u8, lang: grammars.Language) bool {
-    _ = source;
-    const t = node.getType();
-    if (lang == .python) {
-        return std.mem.eql(u8, t, "else_clause");
-    }
-
-    if (lang == .go) {
-        const p = node.parent();
-        if (!p.isNull() and std.mem.eql(u8, p.getType(), "if_statement")) {
-            const alt = p.childByFieldName("alternative");
-            if (!alt.isNull() and alt.startByte() == node.startByte()) {
-                // If alternative is a block, this is the else branch
-                return std.mem.eql(u8, t, "block");
-            }
-        }
-        return false;
-    }
-
-    if (std.mem.eql(u8, t, "else_clause")) {
-        // If it contains an if_statement child, it's else-if and the if_statement will handle it
-        var i: u32 = 0;
-        const count = node.childCount();
-        while (i < count) : (i += 1) {
-            const ch_type = node.child(i).getType();
-            if (std.mem.eql(u8, ch_type, "if_statement") or std.mem.eql(u8, ch_type, "if_expression")) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    return false;
-}
-
-fn isTernaryNode(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .typescript, .tsx => std.mem.eql(u8, node_type, "ternary_expression"),
-        .c_sharp, .python => std.mem.eql(u8, node_type, "conditional_expression"),
-        else => false,
-    };
-}
-
-fn isSwitchNode(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .go => std.mem.eql(u8, node_type, "expression_switch_statement") or
-            std.mem.eql(u8, node_type, "type_switch_statement") or
-            std.mem.eql(u8, node_type, "select_statement"),
-        .rust => std.mem.eql(u8, node_type, "match_expression"),
-        .python => std.mem.eql(u8, node_type, "match_statement"),
-        .typescript, .tsx => std.mem.eql(u8, node_type, "switch_statement"),
-        .c_sharp => std.mem.eql(u8, node_type, "switch_statement") or
-            std.mem.eql(u8, node_type, "switch_expression"),
-        .unknown => false,
-    };
-}
-
-fn isLoopNode(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .go => std.mem.eql(u8, node_type, "for_statement"),
-        .rust => std.mem.eql(u8, node_type, "for_expression") or
-            std.mem.eql(u8, node_type, "while_expression") or
-            std.mem.eql(u8, node_type, "loop_expression"),
-        .python => std.mem.eql(u8, node_type, "for_statement") or
-            std.mem.eql(u8, node_type, "while_statement"),
-        .typescript, .tsx => std.mem.eql(u8, node_type, "for_statement") or
-            std.mem.eql(u8, node_type, "for_in_statement") or
-            std.mem.eql(u8, node_type, "for_of_statement") or
-            std.mem.eql(u8, node_type, "while_statement") or
-            std.mem.eql(u8, node_type, "do_statement"),
-        .c_sharp => std.mem.eql(u8, node_type, "for_statement") or
-            std.mem.eql(u8, node_type, "for_each_statement") or
-            std.mem.eql(u8, node_type, "while_statement") or
-            std.mem.eql(u8, node_type, "do_statement"),
-        .unknown => false,
-    };
-}
-
-fn isCatchNode(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .python => std.mem.eql(u8, node_type, "except_clause") or
-            std.mem.eql(u8, node_type, "except_group_clause"),
-        .typescript, .tsx, .c_sharp => std.mem.eql(u8, node_type, "catch_clause"),
-        else => false,
-    };
-}
-
-fn isClosureNode(node_type: []const u8, lang: grammars.Language) bool {
-    return lang.isClosure(node_type);
 }
 
 fn getLogicalOperator(node: bindings.TSNode, source: []const u8, lang: grammars.Language) ?[]const u8 {
@@ -617,4 +507,3 @@ test "calculateComplexity - TypeScript arrow function in variable_declarator" {
     try std.testing.expectEqualStrings("check", funcs[0].name);
     try std.testing.expectEqual(@as(u32, 1), funcs[0].complexity);
 }
-

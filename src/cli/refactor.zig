@@ -56,7 +56,6 @@ pub fn executeRefactor(allocator: std.mem.Allocator, args: []const []const u8, o
         try json_args.object.put(allocator, "test_cmd", std.json.Value{ .string = tc });
     }
 
-
     const res = try app.executeToolCall(allocator, "safe_refactor", json_args);
     defer res.deinit(allocator);
 
@@ -101,4 +100,3 @@ test "refactor cli dry-run flag support" {
     try std.testing.expectEqual(0, code2);
     try std.testing.expect(std.mem.indexOf(u8, out_list2.items, "status=dry_run") != null);
 }
-
