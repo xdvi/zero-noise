@@ -191,37 +191,9 @@ fn isRedundantTernary(node: bindings.TSNode, source: []const u8, lang: grammars.
     var alt_node: bindings.TSNode = undefined;
 
     switch (lang) {
-        .python => {
-            cons_node = node.childByFieldName("body");
-            if (cons_node.isNull()) cons_node = node.childByFieldName("consequence");
-            if (cons_node.isNull()) {
-                if (node.namedChildCount() >= 2) {
-                    cons_node = node.namedChild(0);
-                } else if (node.childCount() >= 1) {
-                    cons_node = node.child(0);
-                }
-            }
-
-            alt_node = node.childByFieldName("alternative");
-            if (alt_node.isNull()) {
-                if (node.namedChildCount() >= 3) {
-                    alt_node = node.namedChild(2);
-                } else if (node.childCount() >= 5) {
-                    alt_node = node.child(node.childCount() - 1);
-                }
-            }
-        },
-        .rust => {
-            const cons_raw = node.childByFieldName("consequence");
-            cons_node = unwrapRustBlock(cons_raw);
-
-            const alt_raw = node.childByFieldName("alternative");
-            alt_node = unwrapRustBlock(alt_raw);
-        },
-        else => {
-            cons_node = node.childByFieldName("consequence");
-            alt_node = node.childByFieldName("alternative");
-        },
+        .python => resolvePythonTernaryNodes(node, &cons_node, &alt_node),
+        .rust => resolveRustTernaryNodes(node, &cons_node, &alt_node),
+        else => resolveDefaultTernaryNodes(node, &cons_node, &alt_node),
     }
 
     if (cons_node.isNull() or alt_node.isNull()) return false;
@@ -1267,4 +1239,35 @@ fn scanLiteralNode(
             .col = pt.column + 1,
         });
     }
+}
+
+fn resolvePythonTernaryNodes(node: bindings.TSNode, cons_node: *bindings.TSNode, alt_node: *bindings.TSNode) void {
+    cons_node.* = node.childByFieldName("body");
+    if (cons_node.isNull()) cons_node.* = node.childByFieldName("consequence");
+    if (cons_node.isNull()) {
+        if (node.namedChildCount() >= 2) {
+            cons_node.* = node.namedChild(0);
+        } else if (node.childCount() >= 1) {
+            cons_node.* = node.child(0);
+        }
+    }
+
+    alt_node.* = node.childByFieldName("alternative");
+    if (alt_node.isNull()) {
+        if (node.namedChildCount() >= 3) {
+            alt_node.* = node.namedChild(2);
+        } else if (node.childCount() >= 5) {
+            alt_node.* = node.child(node.childCount() - 1);
+        }
+    }
+}
+
+fn resolveRustTernaryNodes(node: bindings.TSNode, cons_node: *bindings.TSNode, alt_node: *bindings.TSNode) void {
+    cons_node.* = unwrapRustBlock(node.childByFieldName("consequence"));
+    alt_node.* = unwrapRustBlock(node.childByFieldName("alternative"));
+}
+
+fn resolveDefaultTernaryNodes(node: bindings.TSNode, cons_node: *bindings.TSNode, alt_node: *bindings.TSNode) void {
+    cons_node.* = node.childByFieldName("consequence");
+    alt_node.* = node.childByFieldName("alternative");
 }
