@@ -70,6 +70,10 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
 
+    return handleBuiltinCommand(allocator, command, sub_args, io, stdout, stderr);
+}
+
+fn handleBuiltinCommand(allocator: std.mem.Allocator, command: []const u8, sub_args: []const []const u8, io: std.Io, stdout: std.Io.File, stderr: std.Io.File) !u8 {
     if (std.mem.eql(u8, command, "bootstrap") or std.mem.eql(u8, command, "--bootstrap")) {
         var root_dir: []const u8 = ".";
         for (sub_args) |arg| {
@@ -85,7 +89,8 @@ pub fn main(init: std.process.Init) !u8 {
         };
         try stdout.writeStreamingAll(io, "zero-noise environment initialized successfully.\n");
         return 0;
-    } else if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
+    }
+    if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
         const ver_str = try std.fmt.allocPrint(allocator, "zero-noise {s} (SQLite {s})\n", .{
             zn.mcp.protocol.SERVER_VERSION,
             zn.getSqliteVersion(),
@@ -93,13 +98,13 @@ pub fn main(init: std.process.Init) !u8 {
         defer allocator.free(ver_str);
         try stdout.writeStreamingAll(io, ver_str);
         return 0;
-    } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
+    }
+    if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
         try printUsage(io, stdout);
         return 0;
-    } else {
-        const err_msg = try std.fmt.allocPrint(allocator, "zero-noise: unknown command '{s}'. Run 'zero-noise --help' for usage.\n", .{command});
-        defer allocator.free(err_msg);
-        try stderr.writeStreamingAll(io, err_msg);
-        return 1;
     }
+    const err_msg = try std.fmt.allocPrint(allocator, "zero-noise: unknown command '{s}'. Run 'zero-noise --help' for usage.\n", .{command});
+    defer allocator.free(err_msg);
+    try stderr.writeStreamingAll(io, err_msg);
+    return 1;
 }
