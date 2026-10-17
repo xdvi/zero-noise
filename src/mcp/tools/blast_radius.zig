@@ -46,27 +46,49 @@ pub fn executeBlastRadiusWithDeps(allocator: std.mem.Allocator, args: ?std.json.
         file_inputs.deinit(allocator);
     }
 
-    try loadBlastFiles(allocator, deps, &files_list, &file_inputs);
+    var references: std.ArrayList(blast.SymbolReference) = .empty;
+    defer references.deinit(allocator);
 
-    var result = try deps.analyzeBlastRadius(allocator, file_inputs.items, symbol);
-    defer result.deinit(allocator);
+    var files_with_usages = std.StringHashMap(void).init(allocator);
+    defer files_with_usages.deinit();
+
+    for (files_list.items) |fp| {
+        const content = deps.fs.readFileAlloc(allocator, fp) catch continue;
+        defer allocator.free(content);
+
+        const file_refs = blast.scanFileReferences(allocator, fp, content, symbol) catch continue;
+        defer allocator.free(file_refs);
+
+        if (file_refs.len == 0) continue;
+        files_with_usages.put(fp, {}) catch {};
+        for (file_refs) |ref| {
+            try references.append(allocator, ref);
+        }
+    }
+
+    const files_count: u32 = @intCast(files_with_usages.count());
+    const risk = blast.calculateRisk(files_count);
+
+    const result_refs = try references.toOwnedSlice(allocator);
 
     if (deps.db.open(allocator, root_dir)) |db_inst| {
         var db = db_inst;
         defer db.close();
         var ledger = ledger_mod.RefactorLedger.init(db, allocator);
-        for (result.references) |ref| {
+        for (result_refs) |ref| {
             ledger.recordSymbol(symbol, ref.file, ref.line, ref.column, ref.is_definition) catch {};
         }
     } else |_| {}
 
     var defs_count: u32 = 0;
     var refs_count: u32 = 0;
-    for (result.references) |ref| {
+    for (result_refs) |ref| {
         if (ref.is_definition) defs_count += 1 else refs_count += 1;
     }
 
-    return fmt.blastRadius(allocator, symbol, defs_count, refs_count, result.files_count, result.risk.asString(), result.references, format);
+    const tool_result = try fmt.blastRadius(allocator, symbol, defs_count, refs_count, files_count, risk.asString(), result_refs, format);
+    allocator.free(result_refs);
+    return tool_result;
 }
 
 pub fn executeBlastRadius(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {

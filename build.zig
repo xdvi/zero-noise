@@ -99,4 +99,24 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run library and integration tests");
     test_step.dependOn(&run_mod_tests.step);
+
+    const bench_exe = b.addExecutable(.{
+        .name = "zero-noise-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/bench.zig"),
+            .target = target,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    bench_exe.root_module.link_libc = true;
+    const run_bench = b.addRunArtifact(bench_exe);
+    run_bench.setCwd(b.path("."));
+    run_bench.step.dependOn(b.getInstallStep());
+    const bench_args = b.option([]const u8, "bench-args", "Space-separated arguments forwarded to the bench step");
+    if (bench_args) |raw| {
+        var it = std.mem.tokenizeScalar(u8, raw, ' ');
+        while (it.next()) |arg| run_bench.addArg(arg);
+    }
+    const bench_step = b.step("bench", "Run benchmarks (CPU, RSS, faults) against zig-out/bin/zero-noise");
+    bench_step.dependOn(&run_bench.step);
 }

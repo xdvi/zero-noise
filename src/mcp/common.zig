@@ -95,7 +95,7 @@ pub const ToolResult = struct {
 
 fn isIgnoredEntryName(name: []const u8) bool {
     if (std.mem.startsWith(u8, name, ".")) return true;
-    const ignored = [_][]const u8{ "node_modules", "target", "zig-out", "zig-cache", "bin", "obj" };
+    const ignored = [_][]const u8{ "node_modules", "target", "zig-out", "zig-cache", "bin", "obj", "bench" };
     for (ignored) |item| {
         if (std.mem.eql(u8, name, item)) return true;
     }
