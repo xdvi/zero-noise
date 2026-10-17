@@ -306,9 +306,10 @@ test "test command timeout rolls back file and kills child" {
     try writeFile(tmp_path, content);
     defer _ = std.c.unlink(tmp_path);
 
+    const sleep_cmd = if (builtin.os.tag == .windows) "powershell -NoProfile -Command Start-Sleep -Seconds 10" else "sleep 10";
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .test_run = .{ .test_cmd = "sleep 10", .timeout_ms = 50 },
+        .test_run = .{ .test_cmd = sleep_cmd, .timeout_ms = 50 },
 
         .fix = true,
     });

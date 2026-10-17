@@ -85,7 +85,17 @@ pub fn isDirectory(filepath_z: [*:0]const u8, fd: ?c_int) bool {
     return false;
 }
 
+extern "kernel32" fn MoveFileExA(lpExistingFileName: [*:0]const u8, lpNewFileName: [*:0]const u8, dwFlags: u32) callconv(.winapi) i32;
+
 pub fn atomicRename(src_path_z: [*:0]const u8, dst_path_z: [*:0]const u8) bool {
+    if (builtin.os.tag == .windows) {
+        const MOVEFILE_REPLACE_EXISTING: u32 = 0x00000001;
+        const MOVEFILE_WRITE_THROUGH: u32 = 0x00000008;
+        if (MoveFileExA(src_path_z, dst_path_z, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+            return true;
+        }
+        return false;
+    }
     if (std.c.rename(src_path_z, dst_path_z) == 0) return true;
     return false;
 }
