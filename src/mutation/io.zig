@@ -15,7 +15,7 @@ const SEEK_END: c_int = 2;
 
 pub fn getProcessId() u32 {
     if (builtin.os.tag == .windows) {
-        return std.os.windows.kernel32.GetCurrentProcessId();
+        return std.os.windows.GetCurrentProcessId();
     } else {
         return @intCast(getpid());
     }
@@ -54,6 +54,8 @@ pub fn setFileMode(filepath_z: [*:0]const u8, mode: u32) void {
     }
 }
 
+extern "kernel32" fn GetFileAttributesA(lpFileName: [*:0]const u8) callconv(.winapi) u32;
+
 pub fn isDirectory(filepath_z: [*:0]const u8, fd: ?c_int) bool {
     if (builtin.os.tag == .linux) {
         var stx: std.os.linux.Statx = undefined;
@@ -65,6 +67,15 @@ pub fn isDirectory(filepath_z: [*:0]const u8, fd: ?c_int) bool {
         }
         const rc = std.os.linux.statx(std.posix.AT.FDCWD, filepath_z, 0, .{ .MODE = true }, &stx);
         if (rc == 0) return std.os.linux.S.ISDIR(stx.mode);
+        return false;
+    }
+    if (builtin.os.tag == .windows) {
+        const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+        const attrs = GetFileAttributesA(filepath_z);
+        if (attrs != INVALID_FILE_ATTRIBUTES) {
+            return (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        }
         return false;
     }
     var st: std.c.Stat = undefined;
@@ -79,13 +90,26 @@ pub fn atomicRename(src_path_z: [*:0]const u8, dst_path_z: [*:0]const u8) bool {
     return false;
 }
 
+extern "kernel32" fn GetFullPathNameA(lpFileName: [*:0]const u8, nBufferLength: u32, lpBuffer: [*]u8, lpFilePart: ?*anyopaque) callconv(.winapi) u32;
+
+fn osRealPath(path_z: [*:0]const u8, out_buf: *[std.fs.max_path_bytes]u8) ?[*:0]const u8 {
+    if (builtin.os.tag == .windows) {
+        const len = GetFullPathNameA(path_z, std.fs.max_path_bytes, out_buf, null);
+        if (len == 0 or len >= std.fs.max_path_bytes) return null;
+        out_buf[len] = 0;
+        return @ptrCast(out_buf);
+    } else {
+        return std.c.realpath(path_z, out_buf);
+    }
+}
+
 pub fn checkWorkspaceConfinement(allocator: std.mem.Allocator, filepath: []const u8) !bool {
     var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return false;
 
     var canonical_cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwd_z: [*:0]const u8 = @ptrCast(cwd_ptr);
-    const canonical_cwd_ptr = std.c.realpath(cwd_z, &canonical_cwd_buf) orelse cwd_z;
+    const canonical_cwd_ptr = osRealPath(cwd_z, &canonical_cwd_buf) orelse cwd_z;
     const cwd = std.mem.sliceTo(canonical_cwd_ptr, 0);
 
     const resolved = try std.fs.path.resolve(allocator, &.{ cwd, filepath });
@@ -99,7 +123,7 @@ pub fn checkWorkspaceConfinement(allocator: std.mem.Allocator, filepath: []const
         const curr_z = try allocator.dupeSentinel(u8, curr_path, 0);
         defer allocator.free(curr_z);
 
-        if (std.c.realpath(curr_z, &real_buf)) |real_ptr| {
+        if (osRealPath(curr_z, &real_buf)) |real_ptr| {
             const canonical = std.mem.sliceTo(real_ptr, 0);
             if (std.mem.startsWith(u8, canonical, cwd)) {
                 if (canonical.len == cwd.len or canonical[cwd.len] == std.fs.path.sep) {

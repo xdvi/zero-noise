@@ -41,9 +41,21 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("c/vendor/grammars/c_sharp/src"));
     mod.addIncludePath(b.path("c/vendor/grammars/zig/src"));
 
-    // Core sources (tree-sitter only; storage is file-based now).
+    // Core sources: tree-sitter runtime and all language grammars.
     const core_sources: []const []const u8 = &.{
         "c/vendor/tree-sitter/lib/src/lib.c",
+        "c/vendor/grammars/go/src/parser.c",
+        "c/vendor/grammars/rust/src/parser.c",
+        "c/vendor/grammars/rust/src/scanner.c",
+        "c/vendor/grammars/python/src/parser.c",
+        "c/vendor/grammars/python/src/scanner.c",
+        "c/vendor/grammars/typescript/typescript/src/parser.c",
+        "c/vendor/grammars/typescript/typescript/src/scanner.c",
+        "c/vendor/grammars/typescript/tsx/src/parser.c",
+        "c/vendor/grammars/typescript/tsx/src/scanner.c",
+        "c/vendor/grammars/c_sharp/src/parser.c",
+        "c/vendor/grammars/c_sharp/src/scanner.c",
+        "c/vendor/grammars/zig/src/parser.c",
     };
 
     for (core_sources) |src| {
@@ -52,8 +64,6 @@ pub fn build(b: *std.Build) void {
             .flags = c_flags,
         });
     }
-
-    // Grammar shared libraries are built separately below.
 
     mod.link_libc = true;
 
@@ -73,40 +83,6 @@ pub fn build(b: *std.Build) void {
     exe.root_module.link_libc = true;
     if (lto) |m| {
         exe.lto = m;
-    }
-
-    // Build grammar shared libraries for dynamic loading.
-    const grammar_specs = [_]struct { name: []const u8, sources: []const []const u8, includes: []const []const u8 }{
-        .{ .name = "go", .sources = &.{ "c/vendor/grammars/go/src/parser.c" }, .includes = &.{ "c/vendor/grammars/go/src" } },
-        .{ .name = "rust", .sources = &.{ "c/vendor/grammars/rust/src/parser.c", "c/vendor/grammars/rust/src/scanner.c" }, .includes = &.{ "c/vendor/grammars/rust/src" } },
-        .{ .name = "python", .sources = &.{ "c/vendor/grammars/python/src/parser.c", "c/vendor/grammars/python/src/scanner.c" }, .includes = &.{ "c/vendor/grammars/python/src" } },
-        .{ .name = "typescript", .sources = &.{ "c/vendor/grammars/typescript/typescript/src/parser.c", "c/vendor/grammars/typescript/typescript/src/scanner.c" }, .includes = &.{ "c/vendor/grammars/typescript/typescript/src" } },
-        .{ .name = "tsx", .sources = &.{ "c/vendor/grammars/typescript/tsx/src/parser.c", "c/vendor/grammars/typescript/tsx/src/scanner.c" }, .includes = &.{ "c/vendor/grammars/typescript/tsx/src" } },
-        .{ .name = "c_sharp", .sources = &.{ "c/vendor/grammars/c_sharp/src/parser.c", "c/vendor/grammars/c_sharp/src/scanner.c" }, .includes = &.{ "c/vendor/grammars/c_sharp/src" } },
-        .{ .name = "zig", .sources = &.{ "c/vendor/grammars/zig/src/parser.c" }, .includes = &.{ "c/vendor/grammars/zig/src" } },
-    };
-
-    for (grammar_specs) |spec| {
-        const lib = b.addLibrary(.{
-            .name = b.fmt("tree-sitter-{s}", .{spec.name}),
-            .root_module = b.createModule(.{
-                .target = target,
-                .optimize = optimize,
-                .strip = strip,
-            }),
-            .linkage = .dynamic,
-        });
-        lib.root_module.link_libc = true;
-        for (spec.includes) |inc| {
-            lib.root_module.addIncludePath(b.path(inc));
-        }
-        lib.root_module.addIncludePath(b.path("c"));
-        lib.root_module.addIncludePath(b.path("c/vendor/tree-sitter/lib/include"));
-        lib.root_module.addIncludePath(b.path("c/vendor/tree-sitter/lib/src"));
-        for (spec.sources) |src| {
-            lib.root_module.addCSourceFile(.{ .file = b.path(src), .flags = c_flags });
-        }
-        b.installArtifact(lib);
     }
 
     b.installArtifact(exe);

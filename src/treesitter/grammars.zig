@@ -12,7 +12,8 @@ pub const Language = enum {
     unknown,
 
     pub fn getTsLanguage(self: Language) ?*const bindings.TSLanguage {
-        return loadGrammarLanguage(self);
+        const loader = specFor(self).ts_language_loader orelse return null;
+        return loader();
     }
 
     pub fn fromExtension(ext: []const u8) Language {
@@ -211,7 +212,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{},
         .extensions = &.{".go"},
         .names = &.{"go"},
-        .ts_language_loader = null,
+        .ts_language_loader = bindings.tree_sitter_go,
     },
     // rust
     .{
@@ -227,7 +228,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{},
         .extensions = &.{".rs"},
         .names = &.{ "rust", "rs" },
-        .ts_language_loader = null,
+        .ts_language_loader = bindings.tree_sitter_rust,
     },
     // python
     .{
@@ -243,7 +244,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{ "except_clause", "except_group_clause" },
         .extensions = &.{".py"},
         .names = &.{ "python", "py" },
-        .ts_language_loader = null,
+        .ts_language_loader = bindings.tree_sitter_python,
     },
     // typescript
     .{
@@ -259,7 +260,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{"catch_clause"},
         .extensions = &.{ ".ts", ".js" },
         .names = &.{ "typescript", "ts", "javascript", "js" },
-        .ts_language_loader = null,
+        .ts_language_loader = bindings.tree_sitter_typescript,
     },
     // tsx
     .{
@@ -275,7 +276,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{"catch_clause"},
         .extensions = &.{ ".tsx", ".jsx" },
         .names = &.{"tsx"},
-        .ts_language_loader = null,
+        .ts_language_loader = bindings.tree_sitter_tsx,
     },
     // c_sharp
     .{
@@ -291,7 +292,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{"catch_clause"},
         .extensions = &.{".cs"},
         .names = &.{ "csharp", "cs", "c_sharp" },
-        .ts_language_loader = null,
+        .ts_language_loader = bindings.tree_sitter_c_sharp,
     },
     // zig
     .{
@@ -306,7 +307,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{"catch_expression"},
         .extensions = &.{".zig"},
         .names = &.{ "zig", "ziglang" },
-        .ts_language_loader = null,
+        .ts_language_loader = bindings.tree_sitter_zig,
     },
     // unknown
     .{},
@@ -470,138 +471,3 @@ test "isFunctionNode recognizes variable_declarator with arrow_function and func
     try std.testing.expect(found_decl);
 }
 
-const GrammarHandle = struct {
-    lang: Language,
-    lib: std.DynLib,
-    ts_language: *const bindings.TSLanguage,
-};
-
-var grammar_handles: std.ArrayList(GrammarHandle) = .empty;
-const grammar_allocator = std.heap.page_allocator;
-
-fn grammarLibraryName(lang: Language) ?[]const u8 {
-    return switch (lang) {
-        .go => "tree-sitter-go",
-        .rust => "tree-sitter-rust",
-        .python => "tree-sitter-python",
-        .typescript => "tree-sitter-typescript",
-        .tsx => "tree-sitter-tsx",
-        .c_sharp => "tree-sitter-c_sharp",
-        .zig => "tree-sitter-zig",
-        .unknown => null,
-    };
-}
-
-fn grammarSymbolName(lang: Language) ?[:0]const u8 {
-    return switch (lang) {
-        .go => "tree_sitter_go",
-        .rust => "tree_sitter_rust",
-        .python => "tree_sitter_python",
-        .typescript => "tree_sitter_typescript",
-        .tsx => "tree_sitter_tsx",
-        .c_sharp => "tree_sitter_c_sharp",
-        .zig => "tree_sitter_zig",
-        .unknown => null,
-    };
-}
-
-var grammar_mutex: std.atomic.Mutex = .unlocked;
-
-fn lockGrammar() void {
-    while (!grammar_mutex.tryLock()) {
-        std.Thread.yield() catch {};
-    }
-}
-
-fn unlockGrammar() void {
-    grammar_mutex.unlock();
-}
-
-extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsiz: usize) isize;
-
-var self_exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-var self_exe_dir: ?[]const u8 = null;
-
-fn getSelfExeDir() ?[]const u8 {
-    if (self_exe_dir) |dir| return dir;
-    const rc = readlink("/proc/self/exe", &self_exe_buf, self_exe_buf.len);
-    if (rc <= 0) return null;
-    const exe_path = self_exe_buf[0..@intCast(rc)];
-    const dir = std.fs.path.dirname(exe_path) orelse return null;
-    self_exe_dir = dir;
-    return dir;
-}
-
-fn loadGrammarLanguage(lang: Language) ?*const bindings.TSLanguage {
-    if (lang == .unknown) return null;
-
-    lockGrammar();
-    defer unlockGrammar();
-
-    // Check cache
-    for (grammar_handles.items) |h| {
-        if (h.lang == lang) return h.ts_language;
-    }
-
-    const lib_name = grammarLibraryName(lang) orelse return null;
-    const sym_name = grammarSymbolName(lang) orelse return null;
-
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    var loaded: ?std.DynLib = null;
-
-    // 1. Relative to binary ($ORIGIN/../lib)
-    if (getSelfExeDir()) |exe_dir| {
-        if (std.fmt.bufPrint(&path_buf, "{s}/../lib/lib{s}.so", .{ exe_dir, lib_name })) |p| {
-            if (std.DynLib.open(p)) |lib| {
-                loaded = lib;
-            } else |_| {}
-        } else |_| {}
-    }
-
-    // 2. Relative to cwd (dev)
-    if (loaded == null) {
-        if (std.fmt.bufPrint(&path_buf, "zig-out/lib/lib{s}.so", .{lib_name})) |p| {
-            if (std.DynLib.open(p)) |lib| {
-                loaded = lib;
-            } else |_| {}
-        } else |_| {}
-    }
-
-    // 3. System (/usr/lib)
-    if (loaded == null) {
-        if (std.fmt.bufPrint(&path_buf, "/usr/lib/lib{s}.so", .{lib_name})) |p| {
-            if (std.DynLib.open(p)) |lib| {
-                loaded = lib;
-            } else |_| {}
-        } else |_| {}
-    }
-
-    // 4. System (/usr/local/lib)
-    if (loaded == null) {
-        if (std.fmt.bufPrint(&path_buf, "/usr/local/lib/lib{s}.so", .{lib_name})) |p| {
-            if (std.DynLib.open(p)) |lib| {
-                loaded = lib;
-            } else |_| {}
-        } else |_| {}
-    }
-
-    var lib = loaded orelse return null;
-    const sym = lib.lookup(*const fn () callconv(.c) ?*const bindings.TSLanguage, sym_name) orelse {
-        lib.close();
-        return null;
-    };
-    const ts_lang = sym() orelse {
-        lib.close();
-        return null;
-    };
-
-    grammar_handles.append(grammar_allocator, .{
-        .lang = lang,
-        .lib = lib,
-        .ts_language = ts_lang,
-    }) catch {
-        lib.close();
-        return null;
-    };
-    return ts_lang;
-}

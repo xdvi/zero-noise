@@ -200,6 +200,13 @@ pub extern "c" fn ts_tree_cursor_goto_first_child(cursor: *TSTreeCursor) bool;
 pub extern "c" fn ts_tree_cursor_goto_next_sibling(cursor: *TSTreeCursor) bool;
 pub extern "c" fn ts_tree_cursor_goto_parent(cursor: *TSTreeCursor) bool;
 
+pub extern "c" fn tree_sitter_go() ?*const TSLanguage;
+pub extern "c" fn tree_sitter_rust() ?*const TSLanguage;
+pub extern "c" fn tree_sitter_python() ?*const TSLanguage;
+pub extern "c" fn tree_sitter_typescript() ?*const TSLanguage;
+pub extern "c" fn tree_sitter_tsx() ?*const TSLanguage;
+pub extern "c" fn tree_sitter_c_sharp() ?*const TSLanguage;
+pub extern "c" fn tree_sitter_zig() ?*const TSLanguage;
 
 test "tree sitter error detection" {
     var parser = try Parser.init();

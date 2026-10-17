@@ -84,24 +84,25 @@ pub fn main(init: std.process.Init) !u8 {
 }
 
 fn handleBuiltinCommand(allocator: std.mem.Allocator, command: []const u8, sub_args: []const []const u8, io: std.Io, stdout: std.Io.File, stderr: std.Io.File) !u8 {
-    if (std.mem.eql(u8, command, "bootstrap") or std.mem.eql(u8, command, "--bootstrap")) {
-        var root_dir: []const u8 = ".";
-        for (sub_args) |arg| {
-            if (std.mem.startsWith(u8, arg, "--root=")) {
-                root_dir = arg["--root=".len..];
-            }
-        }
-        zn.storage.db.bootstrap(allocator, io, root_dir) catch |err| {
-            const err_msg = try std.fmt.allocPrint(allocator, "zero-noise: bootstrap error: {s}\n", .{@errorName(err)});
-            defer allocator.free(err_msg);
-            try stderr.writeStreamingAll(io, err_msg);
-            return 1;
-        };
-        try stdout.writeStreamingAll(io, "zero-noise environment initialized successfully.\n");
-        return 0;
+    if (!std.mem.eql(u8, command, "bootstrap") and !std.mem.eql(u8, command, "--bootstrap")) {
+        const err_msg = try std.fmt.allocPrint(allocator, "zero-noise: unknown command '{s}'. Run 'zero-noise --help' for usage.\n", .{command});
+        defer allocator.free(err_msg);
+        try stderr.writeStreamingAll(io, err_msg);
+        return 1;
     }
-    const err_msg = try std.fmt.allocPrint(allocator, "zero-noise: unknown command '{s}'. Run 'zero-noise --help' for usage.\n", .{command});
-    defer allocator.free(err_msg);
-    try stderr.writeStreamingAll(io, err_msg);
-    return 1;
+
+    var root_dir: []const u8 = ".";
+    for (sub_args) |arg| {
+        if (std.mem.startsWith(u8, arg, "--root=")) {
+            root_dir = arg["--root=".len..];
+        }
+    }
+    zn.storage.db.bootstrap(allocator, io, root_dir) catch |err| {
+        const err_msg = try std.fmt.allocPrint(allocator, "zero-noise: bootstrap error: {s}\n", .{@errorName(err)});
+        defer allocator.free(err_msg);
+        try stderr.writeStreamingAll(io, err_msg);
+        return 1;
+    };
+    try stdout.writeStreamingAll(io, "zero-noise environment initialized successfully.\n");
+    return 0;
 }
