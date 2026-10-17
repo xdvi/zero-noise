@@ -32,31 +32,32 @@ pub fn executeComplexity(allocator: std.mem.Allocator, args: []const []const u8,
         try paths_list.append(allocator, ".");
     }
 
-    var total_exit: u8 = 0;
     var exceeded_count: usize = 0;
     for (paths_list.items) |path| {
-        var json_args = std.json.Value{
-            .object = .empty,
-        };
-        defer json_args.object.deinit(allocator);
-
-        try json_args.object.put(allocator, "path", std.json.Value{ .string = path });
-        try json_args.object.put(allocator, "threshold", std.json.Value{ .integer = threshold });
-        try json_args.object.put(allocator, "format", std.json.Value{ .string = format });
-
-        const res = try app.executeToolCall(allocator, "complexity", json_args);
-        defer res.deinit(allocator);
-
-        try out_list.appendSlice(allocator, res.text);
-        if (res.text.len > 0 and res.text[res.text.len - 1] != '\n') {
-            try out_list.append(allocator, '\n');
-        }
-        if (res.is_error) exceeded_count += 1;
-        exceeded_count += res.count;
+        exceeded_count += try processComplexityPath(allocator, path, threshold, format, out_list);
     }
 
-    total_exit = if (exceeded_count > 0) 1 else 0;
-    return total_exit;
+    return if (exceeded_count > 0) 1 else 0;
+}
+
+fn processComplexityPath(allocator: std.mem.Allocator, path: []const u8, threshold: i64, format: []const u8, out_list: *std.ArrayList(u8)) !usize {
+    var json_args = std.json.Value{ .object = .empty };
+    defer json_args.object.deinit(allocator);
+
+    try json_args.object.put(allocator, "path", std.json.Value{ .string = path });
+    try json_args.object.put(allocator, "threshold", std.json.Value{ .integer = threshold });
+    try json_args.object.put(allocator, "format", std.json.Value{ .string = format });
+
+    const res = try app.executeToolCall(allocator, "complexity", json_args);
+    defer res.deinit(allocator);
+
+    try out_list.appendSlice(allocator, res.text);
+    if (res.text.len > 0 and res.text[res.text.len - 1] != '\n') {
+        try out_list.append(allocator, '\n');
+    }
+    var count: usize = res.count;
+    if (res.is_error) count += 1;
+    return count;
 }
 
 test "complexity cli execution exceeding threshold returns exit code 1" {
