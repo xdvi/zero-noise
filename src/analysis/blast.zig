@@ -444,28 +444,43 @@ fn isInsideStringLiteral(line: []const u8, idx: usize) bool {
     var in_single = false;
     var in_double = false;
     var i: usize = 0;
-    while (i < idx and i < line.len) : (i += 1) {
-        if (in_double) {
-            if (line[i] == '\\' and i + 1 < line.len) {
-                i += 1;
-                continue;
-            }
-            if (line[i] == '"') in_double = false;
-        } else if (in_single) {
-            if (line[i] == '\\' and i + 1 < line.len) {
-                i += 1;
-                continue;
-            }
-            if (line[i] == '\'') in_single = false;
-        } else {
-            if (line[i] == '"') {
-                in_double = true;
-            } else if (line[i] == '\'') {
-                in_single = true;
-            }
-        }
+    while (i < idx and i < line.len) {
+        const step = advanceStringState(line, i, in_single, in_double);
+        i = step.next_i;
+        in_single = step.in_single;
+        in_double = step.in_double;
     }
     return in_single or in_double;
+}
+
+const StringState = struct { next_i: usize, in_single: bool, in_double: bool };
+
+fn advanceStringState(line: []const u8, i: usize, in_single: bool, in_double: bool) StringState {
+    if (in_double) {
+        if (line[i] == '\\' and i + 1 < line.len) {
+            return .{ .next_i = i + 2, .in_single = in_single, .in_double = in_double };
+        }
+        if (line[i] == '"') {
+            return .{ .next_i = i + 1, .in_single = in_single, .in_double = false };
+        }
+        return .{ .next_i = i + 1, .in_single = in_single, .in_double = in_double };
+    }
+    if (in_single) {
+        if (line[i] == '\\' and i + 1 < line.len) {
+            return .{ .next_i = i + 2, .in_single = in_single, .in_double = in_double };
+        }
+        if (line[i] == '\'') {
+            return .{ .next_i = i + 1, .in_single = false, .in_double = in_double };
+        }
+        return .{ .next_i = i + 1, .in_single = in_single, .in_double = in_double };
+    }
+    if (line[i] == '"') {
+        return .{ .next_i = i + 1, .in_single = false, .in_double = true };
+    }
+    if (line[i] == '\'') {
+        return .{ .next_i = i + 1, .in_single = true, .in_double = false };
+    }
+    return .{ .next_i = i + 1, .in_single = in_single, .in_double = in_double };
 }
 
 fn scanByLines(
