@@ -72,25 +72,22 @@ fn skipRawString(src: []const u8, idx: usize) ?usize {
     if (p >= src.len) return null;
     if (!(src[p] == '"' or (h == 0 and src[p] == '\''))) return null;
     const quote = src[p];
+
     var i = p + 1;
-    while (i < src.len) {
-        if (src[i] == quote) {
-            var matched = true;
-            if (i + 1 + h > src.len) {
-                matched = false;
-            } else {
-                for (0..h) |k| {
-                    if (src[i + 1 + k] != '#') {
-                        matched = false;
-                        break;
-                    }
-                }
-            }
-            if (matched) return i + 1 + h;
-        }
-        i += 1;
+    while (i < src.len) : (i += 1) {
+        if (src[i] != quote) continue;
+        if (rawStringClosingMatches(src, i, h)) return i + 1 + h;
     }
     return src.len;
+}
+
+fn rawStringClosingMatches(src: []const u8, idx: usize, hashes: usize) bool {
+    if (idx + 1 + hashes > src.len) return false;
+    var k: usize = 0;
+    while (k < hashes) : (k += 1) {
+        if (src[idx + 1 + k] != '#') return false;
+    }
+    return true;
 }
 
 fn skipVerbatimString(src: []const u8, idx: usize) ?usize {
