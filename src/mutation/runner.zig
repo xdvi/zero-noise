@@ -143,102 +143,7 @@ pub fn executeSafeRefactor(
         };
     }
 
-    const dirname = std.fs.path.dirname(options.filepath);
-    const rand_val = io.getRandomToken();
-    const pid = io.getProcessId();
-    const tmp_filename = try std.fmt.allocPrint(allocator, ".{s}.{x}_{d}.tmp", .{ basename, rand_val, pid });
-    defer allocator.free(tmp_filename);
-
-    const tmp_path = if (dirname) |d|
-        try std.fs.path.join(allocator, &.{ d, tmp_filename })
-    else
-        try allocator.dupe(u8, tmp_filename);
-    defer allocator.free(tmp_path);
-
-    const tmp_path_z = try allocator.dupeSentinel(u8, tmp_path, 0);
-    defer allocator.free(tmp_path_z);
-
-    const target_path_z = try allocator.dupeSentinel(u8, options.filepath, 0);
-    defer allocator.free(target_path_z);
-
-    const orig_mode = io.getFileMode(target_path_z);
-
-    try io.writeFile(tmp_path_z, candidate);
-    if (orig_mode) |mode| {
-        io.setFileMode(tmp_path_z, mode);
-    }
-
-    const syntax_valid = try syntax.validateCandidateSyntaxDelta(options.filepath, original_content, candidate);
-    if (!syntax_valid) {
-        _ = std.c.unlink(tmp_path_z);
-        return SafeRefactorResult{
-            .status = .rolled_back,
-            .diff = diff,
-            .error_msg = try allocator.dupe(u8, "error: syntax error after refactor: AST validation failed"),
-        };
-    }
-
-    const backup_filename = try std.fmt.allocPrint(allocator, ".{s}.{x}_{d}.orig", .{ basename, rand_val, pid });
-    defer allocator.free(backup_filename);
-
-    const backup_path = if (dirname) |d|
-        try std.fs.path.join(allocator, &.{ d, backup_filename })
-    else
-        try allocator.dupe(u8, backup_filename);
-    defer allocator.free(backup_path);
-
-    const backup_path_z = try allocator.dupeSentinel(u8, backup_path, 0);
-    defer allocator.free(backup_path_z);
-
-    _ = std.c.unlink(backup_path_z);
-    if (!io.atomicRename(target_path_z, backup_path_z)) {
-        _ = std.c.unlink(tmp_path_z);
-        return SafeRefactorResult{
-            .status = .rolled_back,
-            .diff = diff,
-            .error_msg = try allocator.dupe(u8, "error: atomic backup failed"),
-        };
-    }
-
-    if (!io.atomicRename(tmp_path_z, target_path_z)) {
-        _ = io.atomicRename(backup_path_z, target_path_z);
-        _ = std.c.unlink(tmp_path_z);
-        return SafeRefactorResult{
-            .status = .rolled_back,
-            .diff = diff,
-            .error_msg = try allocator.dupe(u8, "error: atomic rename failed"),
-        };
-    }
-
-    if (options.test_run.test_cmd) |test_cmd| {
-        const test_ok = test_runner.runTestCommandWithTimeout(allocator, test_cmd, options.test_run.timeout_ms) catch |err| switch (err) {
-            error.TestTimeout => {
-                _ = io.atomicRename(backup_path_z, target_path_z);
-                return SafeRefactorResult{
-                    .status = .rolled_back,
-                    .diff = diff,
-                    .error_msg = try allocator.dupe(u8, "error: tests failed after refactor, rolled back changes (command timed out)"),
-                };
-            },
-        };
-
-        if (!test_ok) {
-            _ = io.atomicRename(backup_path_z, target_path_z);
-            return SafeRefactorResult{
-                .status = .rolled_back,
-                .diff = diff,
-                .error_msg = try allocator.dupe(u8, "error: tests failed after refactor, rolled back changes"),
-            };
-        }
-    }
-
-    _ = std.c.unlink(backup_path_z);
-
-    return SafeRefactorResult{
-        .status = .verified,
-        .diff = diff,
-        .error_msg = null,
-    };
+    return applyCandidate(allocator, options, original_content, candidate, diff, basename);
 }
 
 test "state lock aborts on hash mismatch" {
@@ -631,4 +536,110 @@ test "workspace confinement prevents symlink escape" {
         const confined = try checkWorkspaceConfinement(allocator, ".test_symlink_escape/passwd");
         try std.testing.expect(!confined);
     }
+}
+
+fn applyCandidate(
+    allocator: std.mem.Allocator,
+    options: SafeRefactorOptions,
+    original_content: []const u8,
+    candidate: []const u8,
+    diff: []const u8,
+    basename: []const u8,
+) !SafeRefactorResult {
+    const dirname = std.fs.path.dirname(options.filepath);
+    const rand_val = io.getRandomToken();
+    const pid = io.getProcessId();
+    const tmp_filename = try std.fmt.allocPrint(allocator, ".{s}.{x}_{d}.tmp", .{ basename, rand_val, pid });
+    defer allocator.free(tmp_filename);
+
+    const tmp_path = if (dirname) |d|
+        try std.fs.path.join(allocator, &.{ d, tmp_filename })
+    else
+        try allocator.dupe(u8, tmp_filename);
+    defer allocator.free(tmp_path);
+
+    const tmp_path_z = try allocator.dupeSentinel(u8, tmp_path, 0);
+    defer allocator.free(tmp_path_z);
+
+    const target_path_z = try allocator.dupeSentinel(u8, options.filepath, 0);
+    defer allocator.free(target_path_z);
+
+    const orig_mode = io.getFileMode(target_path_z);
+
+    try io.writeFile(tmp_path_z, candidate);
+    if (orig_mode) |mode| {
+        io.setFileMode(tmp_path_z, mode);
+    }
+
+    const syntax_valid = try syntax.validateCandidateSyntaxDelta(options.filepath, original_content, candidate);
+    if (!syntax_valid) {
+        _ = std.c.unlink(tmp_path_z);
+        return SafeRefactorResult{
+            .status = .rolled_back,
+            .diff = diff,
+            .error_msg = try allocator.dupe(u8, "error: syntax error after refactor: AST validation failed"),
+        };
+    }
+
+    const backup_filename = try std.fmt.allocPrint(allocator, ".{s}.{x}_{d}.orig", .{ basename, rand_val, pid });
+    defer allocator.free(backup_filename);
+
+    const backup_path = if (dirname) |d|
+        try std.fs.path.join(allocator, &.{ d, backup_filename })
+    else
+        try allocator.dupe(u8, backup_filename);
+    defer allocator.free(backup_path);
+
+    const backup_path_z = try allocator.dupeSentinel(u8, backup_path, 0);
+    defer allocator.free(backup_path_z);
+
+    _ = std.c.unlink(backup_path_z);
+    if (!io.atomicRename(target_path_z, backup_path_z)) {
+        _ = std.c.unlink(tmp_path_z);
+        return SafeRefactorResult{
+            .status = .rolled_back,
+            .diff = diff,
+            .error_msg = try allocator.dupe(u8, "error: atomic backup failed"),
+        };
+    }
+
+    if (!io.atomicRename(tmp_path_z, target_path_z)) {
+        _ = io.atomicRename(backup_path_z, target_path_z);
+        _ = std.c.unlink(tmp_path_z);
+        return SafeRefactorResult{
+            .status = .rolled_back,
+            .diff = diff,
+            .error_msg = try allocator.dupe(u8, "error: atomic rename failed"),
+        };
+    }
+
+    if (options.test_run.test_cmd) |test_cmd| {
+        const test_ok = test_runner.runTestCommandWithTimeout(allocator, test_cmd, options.test_run.timeout_ms) catch |err| switch (err) {
+            error.TestTimeout => {
+                _ = io.atomicRename(backup_path_z, target_path_z);
+                return SafeRefactorResult{
+                    .status = .rolled_back,
+                    .diff = diff,
+                    .error_msg = try allocator.dupe(u8, "error: tests failed after refactor, rolled back changes (command timed out)"),
+                };
+            },
+        };
+
+        if (!test_ok) {
+            _ = io.atomicRename(backup_path_z, target_path_z);
+            return SafeRefactorResult{
+                .status = .rolled_back,
+                .diff = diff,
+                .error_msg = try allocator.dupe(u8, "error: tests failed after refactor, rolled back changes"),
+            };
+        }
+    }
+
+    _ = std.c.unlink(backup_path_z);
+
+    return SafeRefactorResult{
+        .status = .verified,
+        .diff = diff,
+        .error_msg = null,
+    };
 }
