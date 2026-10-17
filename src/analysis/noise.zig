@@ -7,6 +7,8 @@ pub const NoiseRule = enum {
     long_closure,
     redundant_ternary,
     repeated_literal,
+    raw_boolean,
+    commented_code,
 
     pub fn asString(self: NoiseRule) []const u8 {
         return switch (self) {
@@ -14,6 +16,8 @@ pub const NoiseRule = enum {
             .long_closure => "long-closure",
             .redundant_ternary => "redundant-ternary",
             .repeated_literal => "repeated-literal",
+            .raw_boolean => "raw-boolean",
+            .commented_code => "commented-code",
         };
     }
 };
@@ -26,10 +30,24 @@ pub const NoiseFinding = struct {
     snippet: []const u8 = "",
 };
 
+pub const NoiseConfig = struct {
+    max_nesting: u32 = 2,
+    max_closure_len: u32 = 80,
+};
+
 pub fn auditNoise(
     allocator: std.mem.Allocator,
     source: []const u8,
     lang: grammars.Language,
+) ![]NoiseFinding {
+    return auditNoiseWithOptions(allocator, source, lang, .{});
+}
+
+pub fn auditNoiseWithOptions(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    lang: grammars.Language,
+    config: NoiseConfig,
 ) ![]NoiseFinding {
     const ts_lang = lang.getTsLanguage() orelse return &.{};
 
@@ -44,12 +62,20 @@ pub fn auditNoise(
     const root = tree.rootNode();
     var findings: std.ArrayList(NoiseFinding) = .empty;
     defer findings.deinit(allocator);
+    errdefer {
+        for (findings.items) |f| {
+            if (f.rule == .repeated_literal) allocator.free(f.message);
+        }
+    }
 
-    // 1. AST walk for structural nesting, closures, and redundant ternaries
-    try walkNoise(allocator, root, source, lang, 0, &findings);
+    // 1. AST walk for structural nesting, closures, redundant ternaries, and raw booleans
+    try walkNoise(allocator, root, source, lang, 0, config, &findings);
 
     // 2. Scan repeated string literals
     try collectRepeatedLiterals(allocator, root, source, &findings);
+
+    // 3. Scan commented-out code blocks
+    try collectCommentedCode(allocator, root, source, &findings);
 
     return findings.toOwnedSlice(allocator);
 }
@@ -58,7 +84,78 @@ pub fn deinitFindings(allocator: std.mem.Allocator, findings: []NoiseFinding) vo
     for (findings) |f| {
         if (f.rule == .repeated_literal) allocator.free(f.message);
     }
-    allocator.free(findings);
+    if (findings.len > 0) {
+        allocator.free(findings);
+    }
+}
+
+fn isArrowFunctionAssignedToVariable(node: bindings.TSNode) bool {
+    const t = node.getType();
+    if (std.mem.eql(u8, t, "arrow_function") or std.mem.eql(u8, t, "function_expression")) {
+        const p = node.parent();
+        if (!p.isNull() and std.mem.eql(u8, p.getType(), "variable_declarator")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn isInsideCallArguments(node: bindings.TSNode) bool {
+    var curr = node.parent();
+    while (!curr.isNull()) {
+        const pt = curr.getType();
+        if (std.mem.eql(u8, pt, "arguments") or std.mem.eql(u8, pt, "argument_list")) {
+            return true;
+        }
+        if (std.mem.eql(u8, pt, "statement_block") or
+            std.mem.eql(u8, pt, "block") or
+            std.mem.eql(u8, pt, "function_declaration") or
+            std.mem.eql(u8, pt, "function_definition") or
+            std.mem.eql(u8, pt, "method_definition") or
+            std.mem.eql(u8, pt, "variable_declarator"))
+        {
+            return false;
+        }
+        curr = curr.parent();
+    }
+    return false;
+}
+
+fn isIfOrWhile(node_type: []const u8, lang: grammars.Language) bool {
+    return switch (lang) {
+        .go => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "for_statement"),
+        .rust => std.mem.eql(u8, node_type, "if_expression") or std.mem.eql(u8, node_type, "while_expression"),
+        .python => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "elif_clause") or std.mem.eql(u8, node_type, "while_statement"),
+        .typescript, .tsx => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "while_statement") or std.mem.eql(u8, node_type, "do_statement"),
+        .c_sharp => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "while_statement") or std.mem.eql(u8, node_type, "do_statement"),
+        .unknown => false,
+    };
+}
+
+fn countLogicalOperators(node: bindings.TSNode, source: []const u8, lang: grammars.Language) u32 {
+    if (node.isNull()) return 0;
+    const t = node.getType();
+
+    if (std.mem.eql(u8, t, "call_expression") or
+        std.mem.eql(u8, t, "call") or
+        std.mem.eql(u8, t, "invocation_expression") or
+        lang.isClosure(t) or
+        lang.isFunction(t))
+    {
+        return 0;
+    }
+
+    var count: u32 = 0;
+    if (grammars.getLogicalOperator(node, source, lang) != null) {
+        count += 1;
+    }
+
+    var i: u32 = 0;
+    const child_count = node.childCount();
+    while (i < child_count) : (i += 1) {
+        count += countLogicalOperators(node.child(i), source, lang);
+    }
+    return count;
 }
 
 fn walkNoise(
@@ -67,6 +164,7 @@ fn walkNoise(
     source: []const u8,
     lang: grammars.Language,
     depth: u32,
+    config: NoiseConfig,
     findings: *std.ArrayList(NoiseFinding),
 ) !void {
     if (node.isNull()) return;
@@ -75,43 +173,44 @@ fn walkNoise(
     var next_depth = depth;
 
     // Reset nesting depth at function boundaries
-    if (isFunctionBoundary(t, lang)) {
+    if (lang.isFunctionNode(node) or isArrowFunctionAssignedToVariable(node) or lang.isClosure(t)) {
         next_depth = 0;
-    } else if (isControlNode(t, lang)) {
-        const is_elif = isElseIfNode(node, lang);
+    } else if (lang.isControl(t)) {
+        const is_elif = grammars.isElseIfNode(node, lang);
         if (!is_elif) {
             next_depth = depth + 1;
-            if (next_depth > 2) {
+            if (next_depth > config.max_nesting) {
                 const pt = node.startPoint();
                 try findings.append(allocator, .{
                     .rule = .excessive_nesting,
                     .line = pt.row + 1,
                     .column = pt.column + 1,
                     .message = "nesting > 2 levels (guard clause / early return opportunity)",
-                    .snippet = getLineSnippet(source, pt.row),
+                    .snippet = grammars.getLineSnippet(source, pt.row),
                 });
             }
         }
     }
 
-    // Check inline closures > 80 characters
-    if (isClosureNode(t, lang)) {
+    // Check inline closures > max_closure_len inside call arguments
+    if (lang.isClosure(t)) {
+        const inside = isInsideCallArguments(node);
         const start = node.startByte();
         const end = node.endByte();
-        if (end > start and (end - start) > 80) {
+        if (inside and end > start and (end - start) > config.max_closure_len) {
             const pt = node.startPoint();
             try findings.append(allocator, .{
                 .rule = .long_closure,
                 .line = pt.row + 1,
                 .column = pt.column + 1,
                 .message = "inline closure exceeds 80 characters",
-                .snippet = getLineSnippet(source, pt.row),
+                .snippet = grammars.getLineSnippet(source, pt.row),
             });
         }
     }
 
     // Check redundant ternaries (e.g., cond ? true : false)
-    if (isTernaryNode(t, lang)) {
+    if (lang.isTernary(t)) {
         if (isRedundantTernary(node, source, lang)) {
             const pt = node.startPoint();
             try findings.append(allocator, .{
@@ -119,135 +218,126 @@ fn walkNoise(
                 .line = pt.row + 1,
                 .column = pt.column + 1,
                 .message = "redundant ternary boolean expression",
-                .snippet = getLineSnippet(source, pt.row),
+                .snippet = grammars.getLineSnippet(source, pt.row),
             });
+        }
+    }
+
+    // Check raw compound boolean conditions in if/while (3+ conditions chained with &&/||)
+    if (isIfOrWhile(t, lang)) {
+        const cond = node.childByFieldName("condition");
+        if (!cond.isNull()) {
+            if (countLogicalOperators(cond, source, lang) >= 2) {
+                const pt = node.startPoint();
+                try findings.append(allocator, .{
+                    .rule = .raw_boolean,
+                    .line = pt.row + 1,
+                    .column = pt.column + 1,
+                    .message = "raw compound boolean condition (extract to domain predicate)",
+                    .snippet = grammars.getLineSnippet(source, pt.row),
+                });
+            }
         }
     }
 
     var i: u32 = 0;
     const count = node.childCount();
     while (i < count) : (i += 1) {
-        try walkNoise(allocator, node.child(i), source, lang, next_depth, findings);
+        try walkNoise(allocator, node.child(i), source, lang, next_depth, config, findings);
     }
-}
-
-fn isFunctionBoundary(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .go => std.mem.eql(u8, node_type, "function_declaration") or std.mem.eql(u8, node_type, "method_declaration"),
-        .rust => std.mem.eql(u8, node_type, "function_item"),
-        .python => std.mem.eql(u8, node_type, "function_definition"),
-        .typescript, .tsx => std.mem.eql(u8, node_type, "function_declaration") or std.mem.eql(u8, node_type, "method_definition"),
-        .c_sharp => std.mem.eql(u8, node_type, "method_declaration") or std.mem.eql(u8, node_type, "local_function_statement"),
-        .unknown => false,
-    };
-}
-
-fn isControlNode(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .go => std.mem.eql(u8, node_type, "if_statement") or
-            std.mem.eql(u8, node_type, "for_statement") or
-            std.mem.eql(u8, node_type, "expression_switch_statement") or
-            std.mem.eql(u8, node_type, "type_switch_statement") or
-            std.mem.eql(u8, node_type, "select_statement"),
-        .rust => std.mem.eql(u8, node_type, "if_expression") or
-            std.mem.eql(u8, node_type, "for_expression") or
-            std.mem.eql(u8, node_type, "while_expression") or
-            std.mem.eql(u8, node_type, "loop_expression") or
-            std.mem.eql(u8, node_type, "match_expression"),
-        .python => std.mem.eql(u8, node_type, "if_statement") or
-            std.mem.eql(u8, node_type, "elif_clause") or
-            std.mem.eql(u8, node_type, "for_statement") or
-            std.mem.eql(u8, node_type, "while_statement") or
-            std.mem.eql(u8, node_type, "match_statement") or
-            std.mem.eql(u8, node_type, "except_clause"),
-        .typescript, .tsx => std.mem.eql(u8, node_type, "if_statement") or
-            std.mem.eql(u8, node_type, "for_statement") or
-            std.mem.eql(u8, node_type, "for_in_statement") or
-            std.mem.eql(u8, node_type, "for_of_statement") or
-            std.mem.eql(u8, node_type, "while_statement") or
-            std.mem.eql(u8, node_type, "do_statement") or
-            std.mem.eql(u8, node_type, "switch_statement") or
-            std.mem.eql(u8, node_type, "catch_clause"),
-        .c_sharp => std.mem.eql(u8, node_type, "if_statement") or
-            std.mem.eql(u8, node_type, "for_statement") or
-            std.mem.eql(u8, node_type, "for_each_statement") or
-            std.mem.eql(u8, node_type, "while_statement") or
-            std.mem.eql(u8, node_type, "do_statement") or
-            std.mem.eql(u8, node_type, "switch_statement") or
-            std.mem.eql(u8, node_type, "catch_clause"),
-        .unknown => false,
-    };
-}
-
-fn isElseIfNode(node: bindings.TSNode, lang: grammars.Language) bool {
-    const t = node.getType();
-    if (lang == .python and std.mem.eql(u8, t, "elif_clause")) return true;
-
-    const p = node.parent();
-    if (p.isNull()) return false;
-    const pt = p.getType();
-
-    if (lang == .go and std.mem.eql(u8, pt, "if_statement")) {
-        const alt = p.childByFieldName("alternative");
-        if (!alt.isNull() and alt.startByte() == node.startByte()) return true;
-    } else if (lang == .rust and (std.mem.eql(u8, pt, "else_clause") or std.mem.eql(u8, pt, "if_expression"))) {
-        return true;
-    } else if (std.mem.eql(u8, pt, "else_clause")) {
-        return true;
-    }
-    return false;
-}
-
-fn isClosureNode(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .go => std.mem.eql(u8, node_type, "func_literal"),
-        .rust => std.mem.eql(u8, node_type, "closure_expression"),
-        .python => std.mem.eql(u8, node_type, "lambda"),
-        .typescript, .tsx => std.mem.eql(u8, node_type, "arrow_function") or
-            std.mem.eql(u8, node_type, "function_expression"),
-        .c_sharp => std.mem.eql(u8, node_type, "lambda_expression") or
-            std.mem.eql(u8, node_type, "anonymous_method_expression"),
-        .unknown => false,
-    };
-}
-
-fn isTernaryNode(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .typescript, .tsx => std.mem.eql(u8, node_type, "ternary_expression"),
-        .c_sharp, .python => std.mem.eql(u8, node_type, "conditional_expression"),
-        else => false,
-    };
 }
 
 fn isRedundantTernary(node: bindings.TSNode, source: []const u8, lang: grammars.Language) bool {
-    _ = lang;
-    const consequence = node.childByFieldName("consequence");
-    const alternative = node.childByFieldName("alternative");
+    var cons_node: bindings.TSNode = undefined;
+    var alt_node: bindings.TSNode = undefined;
 
-    if (!consequence.isNull() and !alternative.isNull()) {
-        const cons_text = std.mem.trim(u8, consequence.slice(source), " \t\r\n;");
-        const alt_text = std.mem.trim(u8, alternative.slice(source), " \t\r\n;");
+    switch (lang) {
+        .python => {
+            cons_node = node.childByFieldName("body");
+            if (cons_node.isNull()) cons_node = node.childByFieldName("consequence");
+            if (cons_node.isNull()) {
+                if (node.namedChildCount() >= 2) {
+                    cons_node = node.namedChild(0);
+                } else if (node.childCount() >= 1) {
+                    cons_node = node.child(0);
+                }
+            }
 
-        const is_true_false = (std.mem.eql(u8, cons_text, "true") or std.mem.eql(u8, cons_text, "True")) and
-            (std.mem.eql(u8, alt_text, "false") or std.mem.eql(u8, alt_text, "False"));
-        const is_false_true = (std.mem.eql(u8, cons_text, "false") or std.mem.eql(u8, cons_text, "False")) and
-            (std.mem.eql(u8, alt_text, "true") or std.mem.eql(u8, alt_text, "True"));
+            alt_node = node.childByFieldName("alternative");
+            if (alt_node.isNull()) {
+                if (node.namedChildCount() >= 3) {
+                    alt_node = node.namedChild(2);
+                } else if (node.childCount() >= 5) {
+                    alt_node = node.child(node.childCount() - 1);
+                }
+            }
+        },
+        .rust => {
+            const cons_raw = node.childByFieldName("consequence");
+            cons_node = unwrapRustBlock(cons_raw);
 
-        if (is_true_false or is_false_true) return true;
+            const alt_raw = node.childByFieldName("alternative");
+            alt_node = unwrapRustBlock(alt_raw);
+        },
+        else => {
+            cons_node = node.childByFieldName("consequence");
+            alt_node = node.childByFieldName("alternative");
+        },
     }
 
-    // Also check raw slice for ternary boolean patterns like `? true : false`
-    const raw = node.slice(source);
-    if (std.mem.indexOf(u8, raw, "?") != null and std.mem.indexOf(u8, raw, ":") != null) {
-        if (std.mem.indexOf(u8, raw, "true") != null and std.mem.indexOf(u8, raw, "false") != null) {
-            return true;
+    if (cons_node.isNull() or alt_node.isNull()) return false;
+
+    const cons_val = getBooleanLiteralValue(cons_node, source) orelse return false;
+    const alt_val = getBooleanLiteralValue(alt_node, source) orelse return false;
+    return cons_val != alt_val;
+}
+
+fn unwrapRustBlock(node: bindings.TSNode) bindings.TSNode {
+    if (node.isNull()) return node;
+    const t = node.getType();
+    if (std.mem.eql(u8, t, "else_clause")) {
+        const alt = node.childByFieldName("alternative");
+        if (!alt.isNull()) return unwrapRustBlock(alt);
+        var i: u32 = 0;
+        while (i < node.namedChildCount()) : (i += 1) {
+            const ch = node.namedChild(i);
+            if (std.mem.eql(u8, ch.getType(), "block") or std.mem.eql(u8, ch.getType(), "if_expression")) {
+                return unwrapRustBlock(ch);
+            }
         }
-        if (std.mem.indexOf(u8, raw, "True") != null and std.mem.indexOf(u8, raw, "False") != null) {
-            return true;
+    } else if (std.mem.eql(u8, t, "block")) {
+        if (node.namedChildCount() == 1) {
+            return unwrapRustBlock(node.namedChild(0));
+        }
+        if (node.namedChildCount() > 0) {
+            const last = node.namedChild(node.namedChildCount() - 1);
+            if (std.mem.eql(u8, last.getType(), "expression_statement")) {
+                if (last.namedChildCount() == 1) {
+                    return unwrapRustBlock(last.namedChild(0));
+                }
+            }
         }
     }
+    return node;
+}
 
-    return false;
+fn getBooleanLiteralValue(node: bindings.TSNode, source: []const u8) ?bool {
+    if (node.isNull()) return null;
+    const text = std.mem.trim(u8, node.slice(source), " \t\r\n;");
+    const t = node.getType();
+
+    if (std.mem.eql(u8, t, "true")) return true;
+    if (std.mem.eql(u8, t, "false")) return false;
+    if (std.mem.eql(u8, t, "boolean_literal")) {
+        if (std.mem.eql(u8, text, "true") or std.mem.eql(u8, text, "True")) return true;
+        if (std.mem.eql(u8, text, "false") or std.mem.eql(u8, text, "False")) return false;
+        return null;
+    }
+
+    if (std.mem.eql(u8, text, "true") or std.mem.eql(u8, text, "True")) return true;
+    if (std.mem.eql(u8, text, "false") or std.mem.eql(u8, text, "False")) return false;
+
+    return null;
 }
 
 const LiteralOccur = struct {
@@ -285,6 +375,224 @@ fn collectRepeatedLiterals(
     }
 }
 
+fn cleanCommentLine(line: []const u8) []const u8 {
+    var s = std.mem.trim(u8, line, " \t\r");
+    if (std.mem.startsWith(u8, s, "///")) {
+        s = s[3..];
+    } else if (std.mem.startsWith(u8, s, "//")) {
+        s = s[2..];
+    } else if (std.mem.startsWith(u8, s, "/*")) {
+        s = s[2..];
+    } else if (std.mem.startsWith(u8, s, "*")) {
+        s = s[1..];
+    } else if (std.mem.startsWith(u8, s, "#")) {
+        s = s[1..];
+    }
+    if (std.mem.endsWith(u8, s, "*/")) {
+        s = s[0 .. s.len - 2];
+    }
+    return std.mem.trim(u8, s, " \t\r");
+}
+
+fn isCodeLine(trimmed: []const u8) bool {
+    if (trimmed.len == 0) return false;
+
+    const code_prefixes = [_][]const u8{
+        "if ", "if(", "elif ", "elif(", "else if", "else {", "else:",
+        "for ", "for(", "while ", "while(", "do {",
+        "switch ", "switch(", "case ",
+        "def ", "func ", "function ", "function(", "fn ", "pub fn ",
+        "class ", "struct ", "interface ", "enum ",
+        "const ", "let ", "var ", "val ",
+        "return ", "return;", "yield ", "throw ",
+        "import ", "export ", "using ", "package ",
+        "try {", "catch ", "catch(", "finally {", "except ", "except:",
+        "console.", "fmt.", "print(", "println(",
+    };
+
+    for (code_prefixes) |prefix| {
+        if (std.mem.startsWith(u8, trimmed, prefix)) return true;
+    }
+
+    if (std.mem.endsWith(u8, trimmed, ";")) {
+        if (std.mem.indexOfAny(u8, trimmed, "()={}") != null or
+            std.mem.indexOf(u8, trimmed, ":=") != null)
+        {
+            return true;
+        }
+    }
+
+    if (std.mem.endsWith(u8, trimmed, "{") or
+        std.mem.eql(u8, trimmed, "}") or
+        std.mem.eql(u8, trimmed, "};"))
+    {
+        return true;
+    }
+
+    if (std.mem.indexOf(u8, trimmed, " := ") != null) return true;
+
+    return false;
+}
+
+fn gatherComments(node: bindings.TSNode, list: *std.ArrayList(bindings.TSNode), allocator: std.mem.Allocator) !void {
+    if (node.isNull()) return;
+    if (std.mem.eql(u8, node.getType(), "comment")) {
+        try list.append(allocator, node);
+        return;
+    }
+    var i: u32 = 0;
+    const count = node.childCount();
+    while (i < count) : (i += 1) {
+        try gatherComments(node.child(i), list, allocator);
+    }
+}
+
+fn collectCommentedCode(
+    allocator: std.mem.Allocator,
+    root: bindings.TSNode,
+    source: []const u8,
+    findings: *std.ArrayList(NoiseFinding),
+) !void {
+    var comments: std.ArrayList(bindings.TSNode) = .empty;
+    defer comments.deinit(allocator);
+
+    try gatherComments(root, &comments, allocator);
+
+    var i: usize = 0;
+    while (i < comments.items.len) {
+        const first = comments.items[i];
+        var last = first;
+        var j = i + 1;
+        while (j < comments.items.len) : (j += 1) {
+            const next = comments.items[j];
+            if (next.startPoint().row <= last.endPoint().row + 1) {
+                last = next;
+            } else {
+                break;
+            }
+        }
+
+        var has_code = false;
+        var first_code_pt = first.startPoint();
+        var k = i;
+        while (k < j) : (k += 1) {
+            const c_node = comments.items[k];
+            const text = c_node.slice(source);
+            var line_it = std.mem.splitScalar(u8, text, '\n');
+            var line_offset: u32 = 0;
+            while (line_it.next()) |line| : (line_offset += 1) {
+                const cleaned = cleanCommentLine(line);
+                if (isCodeLine(cleaned)) {
+                    if (!has_code) {
+                        has_code = true;
+                        first_code_pt = .{
+                            .row = c_node.startPoint().row + line_offset,
+                            .column = c_node.startPoint().column,
+                        };
+                    }
+                    break;
+                }
+            }
+            if (has_code) break;
+        }
+
+        if (has_code) {
+            try findings.append(allocator, .{
+                .rule = .commented_code,
+                .line = first_code_pt.row + 1,
+                .column = first_code_pt.column + 1,
+                .message = "commented-out code block detected",
+                .snippet = grammars.getLineSnippet(source, first_code_pt.row),
+            });
+        }
+
+        i = j;
+    }
+}
+
+fn extractStringLiteralContent(raw: []const u8) ?[]const u8 {
+    if (raw.len < 2) return null;
+
+    // Go raw string: `content`
+    if (raw[0] == '`' and raw[raw.len - 1] == '`') {
+        return raw[1 .. raw.len - 1];
+    }
+
+    // Python / C# triple quotes: """content""" or '''content'''
+    if (raw.len >= 6) {
+        if (std.mem.startsWith(u8, raw, "\"\"\"") and std.mem.endsWith(u8, raw, "\"\"\"")) {
+            return raw[3 .. raw.len - 3];
+        }
+        if (std.mem.startsWith(u8, raw, "'''") and std.mem.endsWith(u8, raw, "'''")) {
+            return raw[3 .. raw.len - 3];
+        }
+    }
+
+    // Python raw triple quotes: r"""content""" or r'''content'''
+    if (raw.len >= 7) {
+        if ((raw[0] == 'r' or raw[0] == 'R') and
+            std.mem.startsWith(u8, raw[1..], "\"\"\"") and
+            std.mem.endsWith(u8, raw, "\"\"\""))
+        {
+            return raw[4 .. raw.len - 3];
+        }
+        if ((raw[0] == 'r' or raw[0] == 'R') and
+            std.mem.startsWith(u8, raw[1..], "'''") and
+            std.mem.endsWith(u8, raw, "'''"))
+        {
+            return raw[4 .. raw.len - 3];
+        }
+    }
+
+    // Python raw string: r"content" or r'content'
+    if (raw.len >= 3 and (raw[0] == 'r' or raw[0] == 'R')) {
+        if ((raw[1] == '"' and raw[raw.len - 1] == '"') or
+            (raw[1] == '\'' and raw[raw.len - 1] == '\''))
+        {
+            return raw[2 .. raw.len - 1];
+        }
+    }
+
+    // C# verbatim string: @"content"
+    if (raw.len >= 3 and raw[0] == '@' and raw[1] == '"' and raw[raw.len - 1] == '"') {
+        return raw[2 .. raw.len - 1];
+    }
+
+    // Rust raw string: r"content", r#"content"#, r##"content"##
+    if (raw.len >= 3 and raw[0] == 'r') {
+        var hashes: usize = 0;
+        while (1 + hashes < raw.len and raw[1 + hashes] == '#') : (hashes += 1) {}
+        if (1 + hashes < raw.len and raw[1 + hashes] == '"') {
+            const prefix_len = hashes + 2;
+            const suffix_len = hashes + 1;
+            if (raw.len >= prefix_len + suffix_len) {
+                if (raw[raw.len - 1 - hashes] == '"') {
+                    var all_hashes = true;
+                    var h: usize = 0;
+                    while (h < hashes) : (h += 1) {
+                        if (raw[raw.len - 1 - h] != '#') {
+                            all_hashes = false;
+                            break;
+                        }
+                    }
+                    if (all_hashes) {
+                        return raw[prefix_len .. raw.len - suffix_len];
+                    }
+                }
+            }
+        }
+    }
+
+    // Standard string: "content" or 'content'
+    if ((raw[0] == '"' and raw[raw.len - 1] == '"') or
+        (raw[0] == '\'' and raw[raw.len - 1] == '\''))
+    {
+        return raw[1 .. raw.len - 1];
+    }
+
+    return null;
+}
+
 fn scanLiterals(
     node: bindings.TSNode,
     source: []const u8,
@@ -294,12 +602,9 @@ fn scanLiterals(
 
     const t = node.getType();
     if (isStringLiteralNode(t)) {
-        var raw = node.slice(source);
-        if (raw.len >= 6) { // e.g. "text" (4 chars inner + 2 quotes)
-            if ((raw[0] == '"' and raw[raw.len - 1] == '"') or
-                (raw[0] == '\'' and raw[raw.len - 1] == '\''))
-            {
-                const inner = raw[1 .. raw.len - 1];
+        if (!isIgnoredLiteralContext(node)) {
+            const raw = node.slice(source);
+            if (extractStringLiteralContent(raw)) |inner| {
                 if (inner.len >= 4) {
                     const pt = node.startPoint();
                     if (map.getEntry(inner)) |entry| {
@@ -323,31 +628,62 @@ fn scanLiterals(
     }
 }
 
+fn isIgnoredLiteralContext(node: bindings.TSNode) bool {
+    var curr = node.parent();
+    while (!curr.isNull()) {
+        const t = curr.getType();
+        if (isImportOrAttributeType(t)) return true;
+        if (std.mem.eql(u8, t, "statement_block") or
+            std.mem.eql(u8, t, "block") or
+            std.mem.eql(u8, t, "class_body") or
+            std.mem.eql(u8, t, "declaration_list") or
+            std.mem.eql(u8, t, "function_declaration") or
+            std.mem.eql(u8, t, "method_definition"))
+        {
+            return false;
+        }
+        curr = curr.parent();
+    }
+    return false;
+}
+
+fn isImportOrAttributeType(t: []const u8) bool {
+    if (std.mem.eql(u8, t, "import_statement") or
+        std.mem.eql(u8, t, "import_from_statement") or
+        std.mem.eql(u8, t, "import_declaration") or
+        std.mem.eql(u8, t, "import_specifier") or
+        std.mem.eql(u8, t, "use_declaration") or
+        std.mem.eql(u8, t, "using_directive") or
+        std.mem.eql(u8, t, "package_clause") or
+        std.mem.eql(u8, t, "package_declaration"))
+    {
+        return true;
+    }
+
+    if (std.mem.eql(u8, t, "decorator") or
+        std.mem.eql(u8, t, "attribute") or
+        std.mem.eql(u8, t, "attribute_item") or
+        std.mem.eql(u8, t, "inner_attribute_item") or
+        std.mem.eql(u8, t, "attribute_list") or
+        std.mem.eql(u8, t, "attribute_argument") or
+        std.mem.eql(u8, t, "meta_item") or
+        std.mem.eql(u8, t, "meta_name_value") or
+        std.mem.eql(u8, t, "annotation"))
+    {
+        return true;
+    }
+
+    return false;
+}
+
 fn isStringLiteralNode(node_type: []const u8) bool {
     return std.mem.eql(u8, node_type, "string_literal") or
         std.mem.eql(u8, node_type, "string") or
         std.mem.eql(u8, node_type, "interpreted_string_literal") or
-        std.mem.eql(u8, node_type, "raw_string_literal");
+        std.mem.eql(u8, node_type, "raw_string_literal") or
+        std.mem.eql(u8, node_type, "verbatim_string_literal");
 }
 
-fn getLineSnippet(source: []const u8, row: u32) []const u8 {
-    var cur_row: u32 = 0;
-    var line_start: usize = 0;
-    var i: usize = 0;
-    while (i < source.len) : (i += 1) {
-        if (source[i] == '\n') {
-            if (cur_row == row) {
-                return std.mem.trim(u8, source[line_start..i], " \t\r");
-            }
-            cur_row += 1;
-            line_start = i + 1;
-        }
-    }
-    if (cur_row == row) {
-        return std.mem.trim(u8, source[line_start..], " \t\r");
-    }
-    return "";
-}
 
 test "auditNoise - Go nesting > 2" {
     const source =
@@ -375,12 +711,12 @@ test "auditNoise - Go nesting > 2" {
 test "auditNoise - TypeScript inline closure > 80 chars" {
     const source =
         \\const handler = () => {
-        \\    const helper = (arg: string) => { return arg + "abcdefghijklmnopqrstuvwxyz_0123456789_abcdefghijklmnopqrstuvwxyz"; };
+        \\    items.map((arg: string) => { return arg + "abcdefghijklmnopqrstuvwxyz_0123456789_abcdefghijklmnopqrstuvwxyz"; });
         \\};
     ;
 
     const findings = try auditNoise(std.testing.allocator, source, .typescript);
-    defer std.testing.allocator.free(findings);
+    defer deinitFindings(std.testing.allocator, findings);
 
     try std.testing.expect(findings.len >= 1);
     var found_long_closure = false;
@@ -445,6 +781,468 @@ test "auditNoise - dirty typescript fixture" {
     }
 
     try std.testing.expect(findings.len > 0);
+}
+
+test "auditNoise - redundant ternary false positives with identifiers" {
+    const source =
+        \\function check(isTrue: boolean, false_positive: boolean): boolean {
+        \\    const a = isTrue ? false_positive : false;
+        \\    const b = false_positive ? isTrue : true;
+        \\    return a ? has_false : is_true;
+        \\}
+    ;
+
+    const findings = try auditNoise(std.testing.allocator, source, .typescript);
+    defer std.testing.allocator.free(findings);
+
+    var ternary_count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == .redundant_ternary) ternary_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), ternary_count);
+}
+
+test "auditNoise - Python redundant conditional expression" {
+    const source =
+        \\def check(cond):
+        \\    a = True if cond else False
+        \\    b = False if cond else True
+        \\    c = True if cond else fallback
+        \\    return a and b
+    ;
+
+    const findings = try auditNoise(std.testing.allocator, source, .python);
+    defer std.testing.allocator.free(findings);
+
+    var ternary_count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == .redundant_ternary) ternary_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), ternary_count);
+}
+
+test "auditNoise - Rust redundant if expression" {
+    const source =
+        \\fn check(cond: bool) -> bool {
+        \\    let a = if cond { true } else { false };
+        \\    let b = if cond { false } else { true };
+        \\    let c = if cond { true } else { fallback };
+        \\    a && b
+        \\}
+    ;
+
+    const findings = try auditNoise(std.testing.allocator, source, .rust);
+    defer std.testing.allocator.free(findings);
+
+    var ternary_count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == .redundant_ternary) ternary_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), ternary_count);
+}
+
+test "auditNoise - ternary with same booleans is not redundant" {
+    const source =
+        \\function check(cond: boolean): boolean {
+        \\    const a = cond ? true : true;
+        \\    const b = cond ? false : false;
+        \\    return a || b;
+        \\}
+    ;
+
+    const findings = try auditNoise(std.testing.allocator, source, .typescript);
+    defer std.testing.allocator.free(findings);
+
+    var ternary_count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == .redundant_ternary) ternary_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), ternary_count);
+}
+
+test "auditNoise - string literals in imports and decorators are ignored" {
+    const source =
+        \\import { a } from "shared-module";
+        \\import { b } from "shared-module";
+        \\import { c } from "shared-module";
+        \\
+        \\@Decorator("repeated-meta")
+        \\@Decorator("repeated-meta")
+        \\@Decorator("repeated-meta")
+        \\class Example {}
+    ;
+
+    const findings = try auditNoise(std.testing.allocator, source, .typescript);
+    defer {
+        for (findings) |f| {
+            if (f.rule == .repeated_literal) std.testing.allocator.free(f.message);
+        }
+        std.testing.allocator.free(findings);
+    }
+
+    var literal_count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == .repeated_literal) literal_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), literal_count);
+}
+
+test "auditNoise - Python and Rust same booleans are not redundant" {
+    const py_source =
+        \\def check(cond):
+        \\    a = True if cond else True
+        \\    b = False if cond else False
+        \\    return a or b
+    ;
+    const py_findings = try auditNoise(std.testing.allocator, py_source, .python);
+    defer std.testing.allocator.free(py_findings);
+
+    var py_ternary_count: usize = 0;
+    for (py_findings) |f| {
+        if (f.rule == .redundant_ternary) py_ternary_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), py_ternary_count);
+
+    const rs_source =
+        \\fn check(cond: bool) -> bool {
+        \\    let a = if cond { true } else { true };
+        \\    let b = if cond { false } else { false };
+        \\    a || b
+        \\}
+    ;
+    const rs_findings = try auditNoise(std.testing.allocator, rs_source, .rust);
+    defer std.testing.allocator.free(rs_findings);
+
+    var rs_ternary_count: usize = 0;
+    for (rs_findings) |f| {
+        if (f.rule == .redundant_ternary) rs_ternary_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), rs_ternary_count);
+}
+
+test "auditNoise - Go imports and C# attributes are ignored for repeated literals" {
+    const go_source =
+        \\package main
+        \\import "github.com/org/common"
+        \\import "github.com/org/common"
+        \\import "github.com/org/common"
+    ;
+    const go_findings = try auditNoise(std.testing.allocator, go_source, .go);
+    defer {
+        for (go_findings) |f| {
+            if (f.rule == .repeated_literal) std.testing.allocator.free(f.message);
+        }
+        std.testing.allocator.free(go_findings);
+    }
+    var go_lit_count: usize = 0;
+    for (go_findings) |f| {
+        if (f.rule == .repeated_literal) go_lit_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), go_lit_count);
+
+    const cs_source =
+        \\using System;
+        \\[Route("api/endpoint")]
+        \\[Route("api/endpoint")]
+        \\[Route("api/endpoint")]
+        \\public class Service {}
+    ;
+    const cs_findings = try auditNoise(std.testing.allocator, cs_source, .c_sharp);
+    defer {
+        for (cs_findings) |f| {
+            if (f.rule == .repeated_literal) std.testing.allocator.free(f.message);
+        }
+        std.testing.allocator.free(cs_findings);
+    }
+    var cs_lit_count: usize = 0;
+    for (cs_findings) |f| {
+        if (f.rule == .repeated_literal) cs_lit_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), cs_lit_count);
+}
+
+test "auditNoise - arrow function assigned to variable not flagged as long closure" {
+    const source =
+        \\const helper = (arg: string) => { return arg + "abcdefghijklmnopqrstuvwxyz_0123456789_abcdefghijklmnopqrstuvwxyz"; };
+    ;
+    const findings = try auditNoise(std.testing.allocator, source, .typescript);
+    defer deinitFindings(std.testing.allocator, findings);
+
+    for (findings) |f| {
+        try std.testing.expect(f.rule != .long_closure);
+    }
+}
+
+test "auditNoise - arrow function assigned to variable resets nesting depth" {
+    const source =
+        \\if (outer1) {
+        \\    if (outer2) {
+        \\        const handler = () => {
+        \\            if (a) {
+        \\                if (b) {
+        \\                    console.log("nesting level 2 inside handler, not excessive");
+        \\                }
+        \\            }
+        \\        };
+        \\    }
+        \\}
+    ;
+    const findings = try auditNoise(std.testing.allocator, source, .typescript);
+    defer deinitFindings(std.testing.allocator, findings);
+
+    var excessive_count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == .excessive_nesting) excessive_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), excessive_count);
+}
+
+test "auditNoise - raw compound boolean condition detection" {
+    const ts_source =
+        \\function check(user: any, config: any) {
+        \\    if (user.isActive && config.allowAccess || user.isSuperAdmin) {
+        \\        return true;
+        \\    }
+        \\    while (a && b && c) {
+        \\        loop();
+        \\    }
+        \\}
+    ;
+    const ts_findings = try auditNoise(std.testing.allocator, ts_source, .typescript);
+    defer deinitFindings(std.testing.allocator, ts_findings);
+
+    var raw_bool_count: usize = 0;
+    for (ts_findings) |f| {
+        if (f.rule == .raw_boolean) raw_bool_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), raw_bool_count);
+
+    const clean_source =
+        \\function clean(user: any, config: any) {
+        \\    if (user.isActive && config.allowAccess) {
+        \\        return true;
+        \\    }
+        \\    if (hasAccess(user, config)) {
+        \\        return true;
+        \\    }
+        \\}
+    ;
+    const clean_findings = try auditNoise(std.testing.allocator, clean_source, .typescript);
+    defer deinitFindings(std.testing.allocator, clean_findings);
+
+    var clean_raw_count: usize = 0;
+    for (clean_findings) |f| {
+        if (f.rule == .raw_boolean) clean_raw_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), clean_raw_count);
+}
+
+test "auditNoise - Python raw compound boolean condition in if/elif/while" {
+    const py_source =
+        \\def evaluate(user, flags):
+        \\    if user.is_active and flags.has_perm or user.is_admin:
+        \\        return True
+        \\    elif a or b or c:
+        \\        return False
+    ;
+    const py_findings = try auditNoise(std.testing.allocator, py_source, .python);
+    defer deinitFindings(std.testing.allocator, py_findings);
+
+    var py_raw_bool_count: usize = 0;
+    for (py_findings) |f| {
+        if (f.rule == .raw_boolean) py_raw_bool_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), py_raw_bool_count);
+}
+
+test "auditNoise - commented-out code blocks detection" {
+    const source =
+        \\// Regular explanation comment
+        \\// This should not be flagged.
+        \\
+        \\// const oldVal = calculate(x);
+        \\// return oldVal;
+        \\
+        \\/*
+        \\if (debug) {
+        \\    console.log("old debug");
+        \\}
+        \\*/
+        \\function active() {
+        \\    return 1;
+        \\}
+    ;
+    const findings = try auditNoise(std.testing.allocator, source, .typescript);
+    defer deinitFindings(std.testing.allocator, findings);
+
+    var commented_code_count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == .commented_code) commented_code_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), commented_code_count);
+}
+
+test "auditNoise - regular comments are not flagged as commented code" {
+    const source =
+        \\// This function computes the result.
+        \\// It accepts two arguments: x and y.
+        \\// NOTE: Do not change the calculation order.
+        \\function compute(x: number, y: number): number {
+        \\    return x + y;
+        \\}
+    ;
+    const findings = try auditNoise(std.testing.allocator, source, .typescript);
+    defer deinitFindings(std.testing.allocator, findings);
+
+    var commented_code_count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == .commented_code) commented_code_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), commented_code_count);
+}
+
+test "auditNoise - multiline and raw string literals repeated in Go, Python, Rust, C#" {
+    // Go raw backtick string
+    {
+        const go_source =
+            \\package main
+            \\func f() {
+            \\    a := `duplicate_token`
+            \\    b := `duplicate_token`
+            \\    c := `duplicate_token`
+            \\    _ = a + b + c
+            \\}
+        ;
+        const findings = try auditNoise(std.testing.allocator, go_source, .go);
+        defer deinitFindings(std.testing.allocator, findings);
+
+        var found_lit = false;
+        for (findings) |f| {
+            if (f.rule == .repeated_literal and std.mem.eql(u8, f.snippet, "duplicate_token")) {
+                found_lit = true;
+            }
+        }
+        try std.testing.expect(found_lit);
+    }
+
+    // Python triple quote string
+    {
+        const py_source =
+            \\def f():
+            \\    a = """duplicate_token"""
+            \\    b = """duplicate_token"""
+            \\    c = """duplicate_token"""
+            \\    return a + b + c
+        ;
+        const findings = try auditNoise(std.testing.allocator, py_source, .python);
+        defer deinitFindings(std.testing.allocator, findings);
+
+        var found_lit = false;
+        for (findings) |f| {
+            if (f.rule == .repeated_literal and std.mem.eql(u8, f.snippet, "duplicate_token")) {
+                found_lit = true;
+            }
+        }
+        try std.testing.expect(found_lit);
+    }
+
+    // Rust raw string
+    {
+        const rs_source =
+            \\fn f() {
+            \\    let a = r#"duplicate_token"#;
+            \\    let b = r#"duplicate_token"#;
+            \\    let c = r#"duplicate_token"#;
+            \\}
+        ;
+        const findings = try auditNoise(std.testing.allocator, rs_source, .rust);
+        defer deinitFindings(std.testing.allocator, findings);
+
+        var found_lit = false;
+        for (findings) |f| {
+            if (f.rule == .repeated_literal and std.mem.eql(u8, f.snippet, "duplicate_token")) {
+                found_lit = true;
+            }
+        }
+        try std.testing.expect(found_lit);
+    }
+
+    // C# verbatim string
+    {
+        const cs_source =
+            \\class C {
+            \\    void M() {
+            \\        var a = @"duplicate_token";
+            \\        var b = @"duplicate_token";
+            \\        var c = @"duplicate_token";
+            \\    }
+            \\}
+        ;
+        const findings = try auditNoise(std.testing.allocator, cs_source, .c_sharp);
+        defer deinitFindings(std.testing.allocator, findings);
+        var found_lit = false;
+        for (findings) |f| {
+            if (f.rule == .repeated_literal and std.mem.eql(u8, f.snippet, "duplicate_token")) {
+                found_lit = true;
+            }
+        }
+        try std.testing.expect(found_lit);
+    }
+}
+
+test "deinitFindings handles empty slices, repeated literals, and mixed findings without leaking" {
+    deinitFindings(std.testing.allocator, &.{});
+
+    var findings = try std.testing.allocator.alloc(NoiseFinding, 3);
+    findings[0] = .{
+        .rule = .excessive_nesting,
+        .line = 1,
+        .column = 1,
+        .message = "static message",
+        .snippet = "snippet",
+    };
+    findings[1] = .{
+        .rule = .repeated_literal,
+        .line = 2,
+        .column = 1,
+        .message = try std.fmt.allocPrint(std.testing.allocator, "allocated msg {d}", .{42}),
+        .snippet = "snippet",
+    };
+    findings[2] = .{
+        .rule = .commented_code,
+        .line = 3,
+        .column = 1,
+        .message = "commented-out code",
+        .snippet = "snippet",
+    };
+
+    deinitFindings(std.testing.allocator, findings);
+}
+
+test "auditNoise - closures reset nesting depth internally" {
+    const source =
+        \\function outer(a: boolean, b: boolean) {
+        \\    if (a) {
+        \\        if (b) {
+        \\            const cb = () => {
+        \\                if (true) {
+        \\                    return 1;
+        \\                }
+        \\            };
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    const findings = try auditNoise(std.testing.allocator, source, .typescript);
+    defer deinitFindings(std.testing.allocator, findings);
+
+    // The if (true) inside the cb closure has nesting 1 relative to closure, so it should NOT be flagged as excessive_nesting
+    var excessive_count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == .excessive_nesting) excessive_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 0), excessive_count);
 }
 
 

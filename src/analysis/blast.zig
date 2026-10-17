@@ -47,9 +47,84 @@ pub fn calculateRisk(files_count: u32) RiskLevel {
     return .high;
 }
 
-pub fn analyzeBlastRadius(
+pub const ParsedFile = struct {
+    path: []const u8,
+    content: []const u8,
+    lang: grammars.Language,
+    tree: ?bindings.Tree = null,
+
+    pub fn deinit(self: *ParsedFile) void {
+        if (self.tree) |*t| {
+            t.deinit();
+            self.tree = null;
+        }
+    }
+};
+
+pub fn parseFileInputs(allocator: std.mem.Allocator, files: []const FileInput) ![]ParsedFile {
+    const list = try allocator.alloc(ParsedFile, files.len);
+    errdefer allocator.free(list);
+
+    for (files, 0..) |f, i| {
+        const lang = grammars.Language.fromPath(f.path);
+        var parsed_tree: ?bindings.Tree = null;
+        if (lang.getTsLanguage()) |tl| {
+            if (bindings.Parser.init()) |parser_inst| {
+                var parser = parser_inst;
+                defer parser.deinit();
+                if (parser.setLanguage(tl)) {
+                    parsed_tree = parser.parseString(f.content) catch null;
+                }
+            } else |_| {}
+        }
+        list[i] = .{
+            .path = f.path,
+            .content = f.content,
+            .lang = lang,
+            .tree = parsed_tree,
+        };
+    }
+    return list;
+}
+
+pub fn deinitParsedFiles(allocator: std.mem.Allocator, files: []ParsedFile) void {
+    for (files) |*f| {
+        f.deinit();
+    }
+    allocator.free(files);
+}
+
+pub fn scanParsedFileReferences(
     allocator: std.mem.Allocator,
-    files: []const FileInput,
+    file: *const ParsedFile,
+    symbol: []const u8,
+) ![]SymbolReference {
+    if (file.content.len == 0 or symbol.len == 0) return &.{};
+    if (std.mem.indexOf(u8, file.content, symbol) == null) return &.{};
+
+    if (file.tree) |tree| {
+        var refs: std.ArrayList(SymbolReference) = .empty;
+        defer refs.deinit(allocator);
+
+        try walkTreeForSymbol(
+            allocator,
+            tree.rootNode(),
+            file.path,
+            file.content,
+            symbol,
+            file.lang,
+            &refs,
+        );
+
+        return refs.toOwnedSlice(allocator);
+    }
+
+    return scanByLines(allocator, file.path, file.content, symbol);
+}
+
+pub fn analyzeBlastRadiusParsed(
+    allocator: std.mem.Allocator,
+    files: []const ParsedFile,
     symbol: []const u8,
 ) !BlastRadiusResult {
     var references: std.ArrayList(SymbolReference) = .empty;
@@ -58,8 +133,8 @@ pub fn analyzeBlastRadius(
     var files_with_usages = std.StringHashMap(void).init(allocator);
     defer files_with_usages.deinit();
 
-    for (files) |file| {
-        const file_refs = try scanFileReferences(allocator, file.path, file.content, symbol);
+    for (files) |*file| {
+        const file_refs = try scanParsedFileReferences(allocator, file, symbol);
         defer allocator.free(file_refs);
 
         if (file_refs.len > 0) {
@@ -70,7 +145,7 @@ pub fn analyzeBlastRadius(
         }
     }
 
-    const files_count = files_with_usages.count();
+    const files_count: u32 = @intCast(files_with_usages.count());
     const total_usages: u32 = @intCast(references.items.len);
     const risk = calculateRisk(files_count);
 
@@ -81,6 +156,16 @@ pub fn analyzeBlastRadius(
         .files_count = files_count,
         .references = try references.toOwnedSlice(allocator),
     };
+}
+
+pub fn analyzeBlastRadius(
+    allocator: std.mem.Allocator,
+    files: []const FileInput,
+    symbol: []const u8,
+) !BlastRadiusResult {
+    const parsed = try parseFileInputs(allocator, files);
+    defer deinitParsedFiles(allocator, parsed);
+    return analyzeBlastRadiusParsed(allocator, parsed, symbol);
 }
 
 pub fn scanFileReferences(
@@ -117,14 +202,66 @@ pub fn scanFileReferences(
                     &refs,
                 );
 
-                if (refs.items.len > 0) {
-                    return refs.toOwnedSlice(allocator);
-                }
+                return refs.toOwnedSlice(allocator);
             } else |_| {}
         }
     }
 
     return scanByLines(allocator, file_path, content, symbol);
+}
+
+fn isStructFieldDeclaration(node: bindings.TSNode) bool {
+    const parent = node.parent();
+    if (parent.isNull()) return false;
+    const pt = parent.getType();
+    if (std.mem.eql(u8, pt, "field_declaration") or
+        std.mem.eql(u8, pt, "property_signature") or
+        std.mem.eql(u8, pt, "field_definition") or
+        std.mem.eql(u8, pt, "public_field_definition") or
+        std.mem.eql(u8, pt, "property_definition") or
+        std.mem.eql(u8, pt, "property_declaration"))
+    {
+        const name_node = parent.childByFieldName("name");
+        if (!name_node.isNull()) {
+            return name_node.startByte() == node.startByte() and name_node.endByte() == node.endByte();
+        }
+        if (parent.childCount() > 0) {
+            const first = parent.child(0);
+            return first.startByte() == node.startByte() and first.endByte() == node.endByte();
+        }
+        return true;
+    }
+    return false;
+}
+
+fn isStructFieldAccess(node: bindings.TSNode) bool {
+    const parent = node.parent();
+    if (parent.isNull()) return false;
+    const pt = parent.getType();
+    if (std.mem.eql(u8, pt, "selector_expression") or
+        std.mem.eql(u8, pt, "field_expression") or
+        std.mem.eql(u8, pt, "member_expression") or
+        std.mem.eql(u8, pt, "member_access_expression"))
+    {
+        const field_node = parent.childByFieldName("field");
+        if (!field_node.isNull()) {
+            return field_node.startByte() == node.startByte() and field_node.endByte() == node.endByte();
+        }
+        const prop_node = parent.childByFieldName("property");
+        if (!prop_node.isNull()) {
+            return prop_node.startByte() == node.startByte() and prop_node.endByte() == node.endByte();
+        }
+        const attr_node = parent.childByFieldName("attribute");
+        if (!attr_node.isNull()) {
+            return attr_node.startByte() == node.startByte() and attr_node.endByte() == node.endByte();
+        }
+        const name_node = parent.childByFieldName("name");
+        if (!name_node.isNull()) {
+            return name_node.startByte() == node.startByte() and name_node.endByte() == node.endByte();
+        }
+        return true;
+    }
+    return false;
 }
 
 fn walkTreeForSymbol(
@@ -139,11 +276,14 @@ fn walkTreeForSymbol(
     if (node.isNull()) return;
 
     const t = node.getType();
-    if (isIdentifierType(t)) {
+    if (grammars.isIdentifierType(t)) {
+        if (isStructFieldDeclaration(node)) {
+            return;
+        }
         const text = node.slice(content);
         if (std.mem.eql(u8, text, symbol)) {
             const pt = node.startPoint();
-            const snippet = getLineSnippet(content, pt.row);
+            const snippet = grammars.getLineSnippet(content, pt.row);
             const is_def = checkIsDefinition(node, lang, snippet, symbol);
 
             try refs.append(allocator, .{
@@ -164,20 +304,16 @@ fn walkTreeForSymbol(
     }
 }
 
-fn isIdentifierType(node_type: []const u8) bool {
-    return std.mem.eql(u8, node_type, "identifier") or
-        std.mem.eql(u8, node_type, "type_identifier") or
-        std.mem.eql(u8, node_type, "field_identifier") or
-        std.mem.eql(u8, node_type, "property_identifier") or
-        std.mem.eql(u8, node_type, "shorthand_property_identifier");
-}
-
 fn checkIsDefinition(
     node: bindings.TSNode,
     lang: grammars.Language,
     snippet: []const u8,
     symbol: []const u8,
 ) bool {
+    if (isStructFieldDeclaration(node) or isStructFieldAccess(node)) {
+        return false;
+    }
+
     const parent = node.parent();
     if (!parent.isNull()) {
         const pt = parent.getType();
@@ -190,6 +326,7 @@ fn checkIsDefinition(
                 std.mem.eql(u8, pt, "method_definition") or
                 std.mem.eql(u8, pt, "variable_declarator") or
                 std.mem.eql(u8, pt, "class_declaration") or
+                std.mem.eql(u8, pt, "class_definition") or
                 std.mem.eql(u8, pt, "struct_item") or
                 std.mem.eql(u8, pt, "enum_item") or
                 std.mem.eql(u8, pt, "trait_item") or
@@ -201,30 +338,102 @@ fn checkIsDefinition(
                 return true;
             }
         }
+        if (std.mem.eql(u8, pt, "let_declaration")) {
+            const pattern = parent.childByFieldName("pattern");
+            if (!pattern.isNull() and node.startByte() >= pattern.startByte() and node.endByte() <= pattern.endByte()) {
+                return true;
+            }
+        }
+        if (std.mem.eql(u8, pt, "assignment")) {
+            const left = parent.childByFieldName("left");
+            if (!left.isNull() and node.startByte() >= left.startByte() and node.endByte() <= left.endByte()) {
+                return true;
+            }
+        }
+        if (std.mem.eql(u8, pt, "short_var_decl")) {
+            const left = parent.childByFieldName("left");
+            if (!left.isNull() and node.startByte() >= left.startByte() and node.endByte() <= left.endByte()) {
+                return true;
+            }
+        }
+        if (std.mem.eql(u8, pt, "call_expression") or
+            std.mem.eql(u8, pt, "arguments") or
+            std.mem.eql(u8, pt, "argument_list") or
+            std.mem.eql(u8, pt, "binary_expression") or
+            std.mem.eql(u8, pt, "unary_expression") or
+            std.mem.eql(u8, pt, "return_statement"))
+        {
+            return false;
+        }
     }
 
     return isDefinitionLineSnippet(snippet, symbol, lang);
 }
 
 fn isDefinitionLineSnippet(line: []const u8, symbol: []const u8, lang: grammars.Language) bool {
-    const trimmed = std.mem.trim(u8, line, " \t\r");
     _ = lang;
+    var rest = std.mem.trim(u8, line, " \t\r");
 
-    // Common definition keywords across Go, Python, TS, Rust, C#
-    const prefixes = [_][]const u8{
-        "func ", "def ", "class ", "interface ", "type ",
-        "fn ", "struct ", "enum ", "const ", "let ", "var ",
-        "public ", "private ", "protected ", "export ", "async def ",
+    const modifiers = [_][]const u8{
+        "export default ", "export ", "public ", "private ", "protected ",
+        "internal ", "static ", "async ", "pub(crate) ", "pub(super) ", "pub ",
     };
-
-    for (prefixes) |prefix| {
-        if (std.mem.startsWith(u8, trimmed, prefix)) {
-            if (std.mem.indexOf(u8, trimmed, symbol) != null) {
-                return true;
+    var stripped = true;
+    while (stripped) {
+        stripped = false;
+        for (modifiers) |m| {
+            if (std.mem.startsWith(u8, rest, m)) {
+                rest = std.mem.trim(u8, rest[m.len..], " \t\r");
+                stripped = true;
+                break;
             }
         }
     }
 
+    const decl_keywords = [_][]const u8{
+        "func ", "function ", "def ", "class ", "interface ", "type ",
+        "fn ", "struct ", "enum ", "trait ", "const ", "let ", "var ",
+    };
+    var matched = false;
+    for (decl_keywords) |kw| {
+        if (std.mem.startsWith(u8, rest, kw)) {
+            rest = std.mem.trim(u8, rest[kw.len..], " \t\r");
+            matched = true;
+            break;
+        }
+    }
+    if (!matched) return false;
+
+    if (std.mem.startsWith(u8, rest, "mut ")) {
+        rest = std.mem.trim(u8, rest[4..], " \t\r");
+    }
+
+    if (std.mem.startsWith(u8, rest, "(")) {
+        if (std.mem.indexOf(u8, rest, ")")) |close_paren| {
+            rest = std.mem.trim(u8, rest[close_paren + 1 ..], " \t\r");
+        }
+    }
+
+    var decl_end: usize = rest.len;
+    for (rest, 0..) |c, idx| {
+        if (c == '=' or c == ':' or c == '(' or c == '{' or c == ';' or c == '<') {
+            decl_end = idx;
+            break;
+        }
+    }
+    const decl_part = rest[0..decl_end];
+
+    return containsWord(decl_part, symbol);
+}
+
+fn containsWord(haystack: []const u8, needle: []const u8) bool {
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, pos, needle)) |idx| {
+        if (isWordBoundary(haystack, idx, needle.len)) {
+            return true;
+        }
+        pos = idx + needle.len;
+    }
     return false;
 }
 
@@ -295,25 +504,6 @@ fn isWordBoundary(line: []const u8, pos: usize, len: usize) bool {
         if (std.ascii.isAlphanumeric(next) or next == '_') return false;
     }
     return true;
-}
-
-fn getLineSnippet(source: []const u8, row: u32) []const u8 {
-    var cur_row: u32 = 0;
-    var line_start: usize = 0;
-    var i: usize = 0;
-    while (i < source.len) : (i += 1) {
-        if (source[i] == '\n') {
-            if (cur_row == row) {
-                return std.mem.trim(u8, source[line_start..i], " \t\r");
-            }
-            cur_row += 1;
-            line_start = i + 1;
-        }
-    }
-    if (cur_row == row) {
-        return std.mem.trim(u8, source[line_start..], " \t\r");
-    }
-    return "";
 }
 
 test "analyzeBlastRadius - single file definition and usage" {
@@ -390,4 +580,114 @@ test "analyzeBlastRadius - comments ignored in line scanner" {
     // Only the def line, not the comment line
     try std.testing.expectEqual(@as(u32, 1), res.total_usages);
     try std.testing.expect(res.references[0].is_definition);
+}
+
+test "scanFileReferences - AST scan does not fallback to lines when zero refs found" {
+    const content =
+        \\// FooSymbol mentioned in comment
+        \\const s = "FooSymbol in string";
+    ;
+
+    const refs = try scanFileReferences(std.testing.allocator, "test.ts", content, "FooSymbol");
+    defer std.testing.allocator.free(refs);
+
+    // Tree-sitter parsed successfully, so FooSymbol in comments/strings must NOT be returned
+    try std.testing.expectEqual(@as(usize, 0), refs.len);
+}
+
+test "scanFileReferences - definition accuracy on variable assignment" {
+    const content =
+        \\const x = foo();
+    ;
+
+    const refs = try scanFileReferences(std.testing.allocator, "test.ts", content, "foo");
+    defer std.testing.allocator.free(refs);
+
+    try std.testing.expectEqual(@as(usize, 1), refs.len);
+    // foo is a call target / value, NOT a definition!
+    try std.testing.expect(!refs[0].is_definition);
+}
+
+test "scanFileReferences - line scanner definition accuracy on variable assignment" {
+    const content =
+        \\const x = foo();
+    ;
+
+    const refs = try scanFileReferences(std.testing.allocator, "test.unknown", content, "foo");
+    defer std.testing.allocator.free(refs);
+
+    try std.testing.expectEqual(@as(usize, 1), refs.len);
+    try std.testing.expect(!refs[0].is_definition);
+}
+
+test "scanFileReferences - line scanner definition accuracy for actual declared symbol" {
+    const content =
+        \\const x = foo();
+    ;
+
+    const refs = try scanFileReferences(std.testing.allocator, "test.unknown", content, "x");
+    defer std.testing.allocator.free(refs);
+
+    try std.testing.expectEqual(@as(usize, 1), refs.len);
+    try std.testing.expect(refs[0].is_definition);
+}
+
+test "scanFileReferences - struct field declarations ignored as false positives" {
+    const ts_content =
+        \\interface Config {
+        \\    worker: number;
+        \\}
+        \\class Service {
+        \\    worker: string;
+        \\}
+    ;
+
+    const refs = try scanFileReferences(std.testing.allocator, "config.ts", ts_content, "worker");
+    defer std.testing.allocator.free(refs);
+    try std.testing.expectEqual(@as(usize, 0), refs.len);
+
+    const go_content =
+        \\package main
+        \\type Config struct {
+        \\    Worker int
+        \\}
+    ;
+
+    const go_refs = try scanFileReferences(std.testing.allocator, "config.go", go_content, "Worker");
+    defer std.testing.allocator.free(go_refs);
+    try std.testing.expectEqual(@as(usize, 0), go_refs.len);
+}
+
+test "scanFileReferences - struct field access is not marked as definition" {
+    const content =
+        \\function update(cfg) {
+        \\    cfg.worker = 42;
+        \\}
+    ;
+
+    const refs = try scanFileReferences(std.testing.allocator, "update.ts", content, "worker");
+    defer std.testing.allocator.free(refs);
+    try std.testing.expectEqual(@as(usize, 1), refs.len);
+    try std.testing.expect(!refs[0].is_definition);
+}
+
+test "analyzeBlastRadiusParsed - reuses ASTs across multiple symbol queries" {
+    const files = [_]FileInput{
+        .{ .path = "svc.go", .content = "package main\n\nfunc Alpha() {}\nfunc Beta() { Alpha() }\n" },
+    };
+
+    const parsed = try parseFileInputs(std.testing.allocator, &files);
+    defer deinitParsedFiles(std.testing.allocator, parsed);
+
+    try std.testing.expect(parsed[0].tree != null);
+
+    const res_alpha = try analyzeBlastRadiusParsed(std.testing.allocator, parsed, "Alpha");
+    var a = res_alpha;
+    defer a.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 2), a.total_usages);
+
+    const res_beta = try analyzeBlastRadiusParsed(std.testing.allocator, parsed, "Beta");
+    var b = res_beta;
+    defer b.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 1), b.total_usages);
 }

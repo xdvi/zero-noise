@@ -27,6 +27,7 @@ pub const sqlite = struct {
     pub extern "c" fn sqlite3_bind_int64(stmt: ?*sqlite3_stmt, idx: c_int, val: i64) c_int;
     pub extern "c" fn sqlite3_changes(db: ?*sqlite3) c_int;
     pub extern "c" fn sqlite3_errmsg(db: ?*sqlite3) [*:0]const u8;
+    pub extern "c" fn sqlite3_free(ptr: ?*anyopaque) void;
 };
 
 pub const Database = struct {
@@ -54,6 +55,9 @@ pub const Database = struct {
         var err_msg: ?[*:0]u8 = null;
         const rc = sqlite.sqlite3_exec(self.handle, sql, null, null, &err_msg);
         if (rc != sqlite.OK) {
+            if (err_msg) |msg| {
+                sqlite.sqlite3_free(msg);
+            }
             return error.QueryFailed;
         }
     }
@@ -126,11 +130,176 @@ pub const Database = struct {
 
         if (sqlite.sqlite3_step(stmt) != sqlite.DONE) return error.ExecutionFailed;
     }
+
+    pub fn recordFileCacheSlice(
+        self: Database,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        mtime: i64,
+        size: i64,
+        sha256: []const u8,
+        noise_count: i32,
+        complexity: i32,
+    ) !void {
+        const path_z = try allocator.dupeSentinel(u8, path, 0);
+        defer allocator.free(path_z);
+        const sha_z = try allocator.dupeSentinel(u8, sha256, 0);
+        defer allocator.free(sha_z);
+        return self.recordFileCache(path_z.ptr, mtime, size, sha_z.ptr, noise_count, complexity);
+    }
+
+    pub const FileCacheEntry = struct {
+        path: []const u8,
+        mtime: i64,
+        size: i64,
+        sha256: []const u8,
+        noise_count: i32,
+        complexity: i32,
+
+        pub fn deinit(self: FileCacheEntry, allocator: std.mem.Allocator) void {
+            allocator.free(self.path);
+            allocator.free(self.sha256);
+        }
+    };
+
+    pub fn getFileCache(
+        self: Database,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+    ) !?FileCacheEntry {
+        var stmt: ?*sqlite.sqlite3_stmt = null;
+        const sql = "SELECT path, mtime, size, sha256, noise_count, complexity FROM file_cache WHERE path = ?1;";
+        if (sqlite.sqlite3_prepare_v2(self.handle, sql, -1, &stmt, null) != sqlite.OK) return error.PrepareFailed;
+        defer _ = sqlite.sqlite3_finalize(stmt);
+
+        _ = sqlite.sqlite3_bind_text(stmt, 1, path.ptr, @intCast(path.len), null);
+
+        const rc = sqlite.sqlite3_step(stmt);
+        if (rc == sqlite.DONE) return null;
+        if (rc != sqlite.ROW) return error.ExecutionFailed;
+
+        const path_ptr = sqlite.sqlite3_column_text(stmt, 0) orelse "";
+        const path_len: usize = @intCast(sqlite.sqlite3_column_bytes(stmt, 0));
+        const mtime = sqlite.sqlite3_column_int64(stmt, 1);
+        const size = sqlite.sqlite3_column_int64(stmt, 2);
+        const sha_ptr = sqlite.sqlite3_column_text(stmt, 3) orelse "";
+        const sha_len: usize = @intCast(sqlite.sqlite3_column_bytes(stmt, 3));
+        const noise_count = sqlite.sqlite3_column_int(stmt, 4);
+        const complexity = sqlite.sqlite3_column_int(stmt, 5);
+
+        const path_dup = try allocator.dupe(u8, path_ptr[0..path_len]);
+        errdefer allocator.free(path_dup);
+        const sha_dup = try allocator.dupe(u8, sha_ptr[0..sha_len]);
+        errdefer allocator.free(sha_dup);
+
+        return FileCacheEntry{
+            .path = path_dup,
+            .mtime = mtime,
+            .size = size,
+            .sha256 = sha_dup,
+            .noise_count = noise_count,
+            .complexity = complexity,
+        };
+    }
 };
 
+pub fn openProjectDb(allocator: std.mem.Allocator, root_path: []const u8) !Database {
+    const clean_root = std.mem.trimEnd(u8, root_path, "/\\");
+    const dir_path = if (clean_root.len == 0 or std.mem.eql(u8, clean_root, "."))
+        try allocator.dupe(u8, ".zero-noise")
+    else
+        try std.fmt.allocPrint(allocator, "{s}/.zero-noise", .{clean_root});
+    defer allocator.free(dir_path);
+
+    const db_path_str = if (clean_root.len == 0 or std.mem.eql(u8, clean_root, "."))
+        try allocator.dupe(u8, ".zero-noise/state.db")
+    else
+        try std.fmt.allocPrint(allocator, "{s}/.zero-noise/state.db", .{clean_root});
+    defer allocator.free(db_path_str);
+
+    const db_path = try allocator.dupeSentinel(u8, db_path_str, 0);
+    defer allocator.free(db_path);
+
+    const io = std.Options.debug_io;
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+
+    return Database.open(db_path.ptr);
+}
+
 test "database init and file cache" {
+    const allocator = std.testing.allocator;
     var db = try Database.open(":memory:");
     defer db.close();
 
     try db.recordFileCache("/test/file.ts", 12345678, 420, "abc123sha", 0, 5);
+
+    try db.recordFileCacheSlice(allocator, "/test/file2.ts", 87654321, 512, "fedcba987", 2, 7);
+    const entry = (try db.getFileCache(allocator, "/test/file2.ts")) orelse return error.TestExpectedEntry;
+    defer entry.deinit(allocator);
+
+    try std.testing.expectEqualStrings("/test/file2.ts", entry.path);
+    try std.testing.expectEqual(@as(i64, 87654321), entry.mtime);
+    try std.testing.expectEqual(@as(i64, 512), entry.size);
+    try std.testing.expectEqualStrings("fedcba987", entry.sha256);
+    try std.testing.expectEqual(@as(i32, 2), entry.noise_count);
+    try std.testing.expectEqual(@as(i32, 7), entry.complexity);
+
+    const missing = try db.getFileCache(allocator, "/nonexistent.ts");
+    try std.testing.expect(missing == null);
+}
+
+pub fn bootstrap(allocator: std.mem.Allocator, io: std.Io, root_path: []const u8) !void {
+    const clean_root = std.mem.trimEnd(u8, root_path, "/\\");
+    const dir_path = if (clean_root.len == 0 or std.mem.eql(u8, clean_root, "."))
+        try allocator.dupe(u8, ".zero-noise")
+    else
+        try std.fmt.allocPrint(allocator, "{s}/.zero-noise", .{clean_root});
+    defer allocator.free(dir_path);
+
+    const db_path_str = if (clean_root.len == 0 or std.mem.eql(u8, clean_root, "."))
+        try allocator.dupe(u8, ".zero-noise/state.db")
+    else
+        try std.fmt.allocPrint(allocator, "{s}/.zero-noise/state.db", .{clean_root});
+    defer allocator.free(db_path_str);
+
+    const db_path = try allocator.dupeSentinel(u8, db_path_str, 0);
+    defer allocator.free(db_path);
+
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+
+    var db = try Database.open(db_path.ptr);
+    db.close();
+}
+
+test "bootstrap initializes directory and database" {
+    const allocator = std.testing.allocator;
+    const io = std.Options.debug_io;
+    const test_dir = "tests/.test_bootstrap_env";
+
+    // Clean up if existed
+    _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db") catch {};
+    _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db-wal") catch {};
+    _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db-shm") catch {};
+
+    try bootstrap(allocator, io, test_dir);
+    defer {
+        _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db") catch {};
+        _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db-wal") catch {};
+        _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db-shm") catch {};
+    }
+
+    // Verify database file exists and can be opened
+    var db = try Database.open("tests/.test_bootstrap_env/.zero-noise/state.db");
+    defer db.close();
+
+    // Idempotent call - second bootstrap shouldn't fail
+    try bootstrap(allocator, io, test_dir);
+}
+
+test "database exec error handles memory safely" {
+    var db = try Database.open(":memory:");
+    defer db.close();
+
+    const err = db.exec("INVALID SQL SYNTAX HERE;");
+    try std.testing.expectError(error.QueryFailed, err);
 }

@@ -14,6 +14,7 @@ fn printUsage(io: std.Io, stdout: std.Io.File) !void {
         \\  complexity [paths..] Calculate SonarSource cognitive complexity per function
         \\  blast <symbol>       Analyze definition, references, and blast radius risk
         \\  refactor <file>      Execute transactional safe refactor with hash verification
+        \\  bootstrap            Initialize environment, state database, and directory
         \\  version              Print zero-noise version
         \\  help                 Show this help message
         \\
@@ -22,8 +23,10 @@ fn printUsage(io: std.Io, stdout: std.Io.File) !void {
         \\  --threshold=<num>    Complexity threshold (default: 15)
         \\  --root=<path>        Project root directory (default: .)
         \\  --fix                Apply automatic simplifications
+        \\  --dry-run            Dry run without applying changes
         \\  --force              Bypass blast radius check
         \\  --test-cmd=<cmd>     Test command for refactor verification
+        \\  --bootstrap          Initialize environment and state database
         \\  -h, --help           Show help
         \\  -v, --version        Show version
         \\
@@ -47,17 +50,41 @@ pub fn main(init: std.process.Init) !u8 {
     const command = args[1];
     const sub_args = args[2..];
 
+    const CliHandler = *const fn (std.mem.Allocator, []const []const u8, std.Io, std.Io.File, std.Io.File) anyerror!u8;
+    const CliCommand = struct { name: []const u8, handler: CliHandler };
+    const cli_commands = [_]CliCommand{
+        .{ .name = "audit", .handler = zn.cli.audit.run },
+        .{ .name = "complexity", .handler = zn.cli.complexity.run },
+        .{ .name = "blast", .handler = zn.cli.blast.run },
+        .{ .name = "refactor", .handler = zn.cli.refactor.run },
+    };
+
     if (std.mem.eql(u8, command, "mcp")) {
         try zn.mcp.server.run(allocator);
         return 0;
-    } else if (std.mem.eql(u8, command, "audit")) {
-        return try zn.cli.audit.run(allocator, sub_args, io, stdout);
-    } else if (std.mem.eql(u8, command, "complexity")) {
-        return try zn.cli.complexity.run(allocator, sub_args, io, stdout);
-    } else if (std.mem.eql(u8, command, "blast")) {
-        return try zn.cli.blast.run(allocator, sub_args, io, stdout, stderr);
-    } else if (std.mem.eql(u8, command, "refactor")) {
-        return try zn.cli.refactor.run(allocator, sub_args, io, stdout, stderr);
+    }
+
+    for (cli_commands) |cmd| {
+        if (std.mem.eql(u8, command, cmd.name)) {
+            return try cmd.handler(allocator, sub_args, io, stdout, stderr);
+        }
+    }
+
+    if (std.mem.eql(u8, command, "bootstrap") or std.mem.eql(u8, command, "--bootstrap")) {
+        var root_dir: []const u8 = ".";
+        for (sub_args) |arg| {
+            if (std.mem.startsWith(u8, arg, "--root=")) {
+                root_dir = arg["--root=".len..];
+            }
+        }
+        zn.storage.db.bootstrap(allocator, io, root_dir) catch |err| {
+            const err_msg = try std.fmt.allocPrint(allocator, "zero-noise: bootstrap error: {s}\n", .{@errorName(err)});
+            defer allocator.free(err_msg);
+            try stderr.writeStreamingAll(io, err_msg);
+            return 1;
+        };
+        try stdout.writeStreamingAll(io, "zero-noise environment initialized successfully.\n");
+        return 0;
     } else if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
         const ver_str = try std.fmt.allocPrint(allocator, "zero-noise {s} (SQLite {s})\n", .{
             zn.mcp.protocol.SERVER_VERSION,

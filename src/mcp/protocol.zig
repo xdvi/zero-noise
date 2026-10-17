@@ -58,7 +58,7 @@ pub const TOOLS = [_]ToolDefinition{
         .name = "safe_refactor",
         .description = "Test-bracketed safe refactoring runner with automatic rollback on failure and state-lock hash protection.",
         .input_schema_json = 
-        \\{"type":"object","properties":{"filepath":{"type":"string","description":"Path of the file to refactor."},"expected_hash":{"type":"string","description":"Expected SHA-256 state lock hash of target file."},"max_blast_risk":{"type":"string","enum":["low","medium","high"],"description":"Maximum allowed blast radius risk level."},"force":{"type":"boolean","description":"Bypass blast radius gate."},"test_cmd":{"type":"string","description":"Optional test command to run for verification."},"fix":{"type":"boolean","description":"Apply algebraic simplifications."},"patch_file":{"type":"string","description":"Optional path to unified diff patch file to apply."},"format":{"type":"string","enum":["text","json","compact"],"description":"Output format: text (default), json, or compact."}},"required":["filepath"]}
+        \\{"type":"object","properties":{"filepath":{"type":"string","description":"Path of the file to refactor."},"expected_hash":{"type":"string","description":"Expected SHA-256 state lock hash of target file."},"max_blast_risk":{"type":"string","enum":["low","medium","high"],"description":"Maximum allowed blast radius risk level."},"force":{"type":"boolean","description":"Bypass blast radius gate."},"test_cmd":{"type":"string","description":"Optional test command to run for verification."},"fix":{"type":"boolean","description":"Apply algebraic simplifications."},"patch_file":{"type":"string","description":"Optional path to unified diff patch file to apply."},"candidate_content":{"type":"string","description":"Optional candidate replacement content."},"format":{"type":"string","enum":["text","json","compact"],"description":"Output format: text (default), json, or compact."}},"required":["filepath"]}
         ,
     },
     .{
@@ -82,11 +82,7 @@ pub const RequestId = union(enum) {
     ) !void {
         switch (self) {
             .integer => |i| try list.print(allocator, "{d}", .{i}),
-            .string => |s| {
-                try list.append(allocator, '"');
-                try list.appendSlice(allocator, s);
-                try list.append(allocator, '"');
-            },
+            .string => |s| try list.print(allocator, "{f}", .{std.json.fmt(s, .{})}),
             .null_id => try list.appendSlice(allocator, "null"),
         }
     }
@@ -193,3 +189,16 @@ test "protocol tools list and initialize" {
     defer allocator.free(err_resp);
     try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32601,\"message\":\"Not found\"}}", err_resp);
 }
+
+test "protocol request id escaping" {
+    const allocator = std.testing.allocator;
+
+    const escaped_id = RequestId{ .string = "req_\"1\"_test" };
+    const resp = try buildSuccessResponseJson(allocator, escaped_id, "{}");
+    defer allocator.free(resp);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, resp, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("req_\"1\"_test", parsed.value.object.get("id").?.string);
+}
+

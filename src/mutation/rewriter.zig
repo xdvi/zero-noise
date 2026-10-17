@@ -80,6 +80,215 @@ fn matchKeyword(src: []const u8, idx: usize, kw: []const u8) bool {
     return true;
 }
 
+pub fn skipTriviaOrLiteral(src: []const u8, idx: usize) ?usize {
+    if (idx >= src.len) return null;
+
+    if (src[idx] == '/' and idx + 1 < src.len and src[idx + 1] == '/') {
+        var i = idx + 2;
+        while (i < src.len and src[i] != '\n') : (i += 1) {}
+        return i;
+    }
+
+    if (src[idx] == '/' and idx + 1 < src.len and src[idx + 1] == '*') {
+        var i = idx + 2;
+        while (i + 1 < src.len and !(src[i] == '*' and src[i + 1] == '/')) : (i += 1) {}
+        if (i + 1 < src.len) return i + 2;
+        return src.len;
+    }
+
+    if (src[idx] == '#') {
+        var i = idx + 1;
+        while (i < src.len and src[i] != '\n') : (i += 1) {}
+        return i;
+    }
+
+    if (src[idx] == 'r' and idx + 1 < src.len) {
+        var h: usize = 0;
+        var p = idx + 1;
+        while (p < src.len and src[p] == '#') : (p += 1) {
+            h += 1;
+        }
+        if (p < src.len and (src[p] == '"' or (h == 0 and src[p] == '\''))) {
+            const quote = src[p];
+            var i = p + 1;
+            while (i < src.len) {
+                if (src[i] == quote) {
+                    var matched = true;
+                    if (i + 1 + h > src.len) {
+                        matched = false;
+                    } else {
+                        for (0..h) |k| {
+                            if (src[i + 1 + k] != '#') {
+                                matched = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (matched) {
+                        return i + 1 + h;
+                    }
+                }
+                i += 1;
+            }
+            return src.len;
+        }
+    }
+
+    if (src[idx] == '@' and idx + 1 < src.len and src[idx + 1] == '"') {
+        var i = idx + 2;
+        while (i < src.len) {
+            if (src[i] == '"') {
+                if (i + 1 < src.len and src[i + 1] == '"') {
+                    i += 2;
+                    continue;
+                }
+                return i + 1;
+            }
+            i += 1;
+        }
+        return src.len;
+    }
+
+    if (src[idx] == '`') {
+        var i = idx + 1;
+        while (i < src.len and src[i] != '`') {
+            if (src[i] == '\\' and i + 1 < src.len) {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        if (i < src.len) return i + 1;
+        return src.len;
+    }
+
+    if (src[idx] == '"' or src[idx] == '\'') {
+        const quote = src[idx];
+        var i = idx + 1;
+        while (i < src.len and src[i] != quote) {
+            if (src[i] == '\\' and i + 1 < src.len) {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        if (i < src.len) return i + 1;
+        return src.len;
+    }
+
+    return null;
+}
+
+fn isCSharp(source: []const u8) bool {
+    if (std.mem.indexOf(u8, source, "using System") != null) return true;
+    if (std.mem.indexOf(u8, source, "namespace ") != null) return true;
+    if (std.mem.indexOf(u8, source, "public class ") != null) return true;
+    if (std.mem.indexOf(u8, source, "internal class ") != null) return true;
+    if (std.mem.indexOf(u8, source, "private class ") != null) return true;
+    if (std.mem.indexOf(u8, source, "Console.WriteLine") != null) return true;
+    if (std.mem.indexOf(u8, source, "bool ") != null) return true;
+    return false;
+}
+
+fn isAlreadyBoolean(cond: []const u8) bool {
+    const trimmed = std.mem.trim(u8, cond, " \t\r\n");
+    if (trimmed.len == 0) return false;
+
+    if (std.mem.eql(u8, trimmed, "true") or std.mem.eql(u8, trimmed, "false") or
+        std.mem.eql(u8, trimmed, "True") or std.mem.eql(u8, trimmed, "False"))
+    {
+        return true;
+    }
+
+    if (trimmed[0] == '!' and (trimmed.len == 1 or trimmed[1] != '=')) {
+        return true;
+    }
+
+    if (std.mem.startsWith(u8, trimmed, "Boolean(") or std.mem.startsWith(u8, trimmed, "bool(")) {
+        return true;
+    }
+
+    var paren_depth: i32 = 0;
+    var idx: usize = 0;
+    while (idx < trimmed.len) {
+        if (skipTriviaOrLiteral(trimmed, idx)) |next_idx| {
+            idx = next_idx;
+            continue;
+        }
+
+        const ch = trimmed[idx];
+        if (ch == '(') {
+            paren_depth += 1;
+        } else if (ch == ')') {
+            if (paren_depth > 0) paren_depth -= 1;
+        } else if (paren_depth == 0) {
+            if (ch == '=' and idx + 1 < trimmed.len and (trimmed[idx + 1] == '=' or trimmed[idx + 1] == '>')) {
+                return true;
+            }
+            if (ch == '!' and idx + 1 < trimmed.len and trimmed[idx + 1] == '=') {
+                return true;
+            }
+            if (ch == '<' or ch == '>') {
+                return true;
+            }
+            if (ch == '&' and idx + 1 < trimmed.len and trimmed[idx + 1] == '&') {
+                return true;
+            }
+            if (ch == '|' and idx + 1 < trimmed.len and trimmed[idx + 1] == '|') {
+                return true;
+            }
+        }
+        idx += 1;
+    }
+
+    if (std.mem.indexOf(u8, trimmed, ".includes(") != null or
+        std.mem.indexOf(u8, trimmed, ".startsWith(") != null or
+        std.mem.indexOf(u8, trimmed, ".endsWith(") != null or
+        std.mem.indexOf(u8, trimmed, ".has(") != null or
+        std.mem.indexOf(u8, trimmed, ".is(") != null)
+    {
+        return true;
+    }
+
+    const last_ident = if (std.mem.lastIndexOf(u8, trimmed, ".")) |dot_pos|
+        trimmed[dot_pos + 1 ..]
+    else
+        trimmed;
+
+    const bool_prefixes = [_][]const u8{
+        "is",       "Is",
+        "has",      "Has",
+        "can",      "Can",
+        "should",   "Should",
+        "was",      "Was",
+        "contains", "Contains",
+        "valid",    "Valid",
+        "ok",       "Ok",
+        "ready",    "Ready",
+        "enabled",  "Enabled",
+        "disabled", "Disabled",
+        "cond",     "Cond",
+    };
+
+    for (bool_prefixes) |prefix| {
+        if (std.mem.startsWith(u8, last_ident, prefix)) {
+            if (last_ident.len == prefix.len) return true;
+            const next_ch = last_ident[prefix.len];
+            if (std.ascii.isUpper(next_ch) or next_ch == '_' or !std.ascii.isAlphabetic(next_ch)) {
+                return true;
+            }
+            if (std.mem.eql(u8, prefix, "valid") or std.mem.eql(u8, prefix, "ready") or
+                std.mem.eql(u8, prefix, "cond") or std.mem.eql(u8, prefix, "enabled") or
+                std.mem.eql(u8, prefix, "disabled"))
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 pub fn rewriteTernaries(allocator: std.mem.Allocator, source: []const u8) !RewriteResult {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
@@ -88,76 +297,9 @@ pub fn rewriteTernaries(allocator: std.mem.Allocator, source: []const u8) !Rewri
     var changes: usize = 0;
 
     while (i < source.len) {
-        if (source[i] == '"' or source[i] == '\'') {
-            const quote = source[i];
-            try out.append(allocator, quote);
-            i += 1;
-            while (i < source.len and source[i] != quote) {
-                if (source[i] == '\\' and i + 1 < source.len) {
-                    try out.append(allocator, source[i]);
-                    try out.append(allocator, source[i + 1]);
-                    i += 2;
-                } else {
-                    try out.append(allocator, source[i]);
-                    i += 1;
-                }
-            }
-            if (i < source.len) {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            continue;
-        }
-
-        if (source[i] == '`') {
-            try out.append(allocator, '`');
-            i += 1;
-            while (i < source.len and source[i] != '`') {
-                if (source[i] == '\\' and i + 1 < source.len) {
-                    try out.append(allocator, source[i]);
-                    try out.append(allocator, source[i + 1]);
-                    i += 2;
-                } else {
-                    try out.append(allocator, source[i]);
-                    i += 1;
-                }
-            }
-            if (i < source.len) {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            continue;
-        }
-
-        if (source[i] == '/' and i + 1 < source.len and source[i + 1] == '/') {
-            while (i < source.len and source[i] != '\n') {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            continue;
-        }
-
-        if (source[i] == '/' and i + 1 < source.len and source[i + 1] == '*') {
-            try out.append(allocator, '/');
-            try out.append(allocator, '*');
-            i += 2;
-            while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            if (i + 1 < source.len) {
-                try out.append(allocator, '*');
-                try out.append(allocator, '/');
-                i += 2;
-            }
-            continue;
-        }
-
-        if (source[i] == '#') {
-            while (i < source.len and source[i] != '\n') {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
+        if (skipTriviaOrLiteral(source, i)) |next_i| {
+            try out.appendSlice(allocator, source[i..next_i]);
+            i = next_i;
             continue;
         }
 
@@ -208,7 +350,13 @@ pub fn rewriteTernaries(allocator: std.mem.Allocator, source: []const u8) !Rewri
                             }
 
                             if (is_consequent_true and is_alt_false) {
-                                try out.appendSlice(allocator, cond);
+                                if (isCSharp(source) or isAlreadyBoolean(cond)) {
+                                    try out.appendSlice(allocator, cond);
+                                } else {
+                                    try out.appendSlice(allocator, "Boolean(");
+                                    try out.appendSlice(allocator, cond);
+                                    try out.append(allocator, ')');
+                                }
                             } else {
                                 const inverted = try invertCondition(allocator, cond);
                                 defer allocator.free(inverted);
@@ -243,6 +391,25 @@ fn findConditionStart(src: []const u8, q_idx: usize) usize {
     while (idx > 0) {
         idx -= 1;
         const ch = src[idx];
+
+        if (ch == '"' or ch == '\'' or ch == '`') {
+            const quote = ch;
+            while (idx > 0) {
+                idx -= 1;
+                if (src[idx] == quote) {
+                    var slash_count: usize = 0;
+                    var s = idx;
+                    while (s > 0 and src[s - 1] == '\\') {
+                        slash_count += 1;
+                        s -= 1;
+                    }
+                    if (slash_count % 2 == 0) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
 
         if (ch == ')') {
             paren_depth += 1;
@@ -282,6 +449,13 @@ fn findConditionStart(src: []const u8, q_idx: usize) usize {
 
         if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
             if (ch == ';' or ch == ',') return idx + 1;
+
+            if (ch == '>' and idx > 0 and src[idx - 1] == '=') {
+                return idx + 1;
+            }
+            if (ch == '=' and idx + 1 < src.len and src[idx + 1] == '>') {
+                return idx + 2;
+            }
 
             if (ch == '=') {
                 const prev = if (idx > 0) src[idx - 1] else 0;
@@ -354,48 +528,9 @@ pub fn rewriteDoubleNegation(allocator: std.mem.Allocator, source: []const u8) !
     var changes: usize = 0;
 
     while (i < source.len) {
-        if (source[i] == '"' or source[i] == '\'') {
-            const quote = source[i];
-            try out.append(allocator, quote);
-            i += 1;
-            while (i < source.len and source[i] != quote) {
-                if (source[i] == '\\' and i + 1 < source.len) {
-                    try out.append(allocator, source[i]);
-                    try out.append(allocator, source[i + 1]);
-                    i += 2;
-                } else {
-                    try out.append(allocator, source[i]);
-                    i += 1;
-                }
-            }
-            if (i < source.len) {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            continue;
-        }
-
-        if (source[i] == '/' and i + 1 < source.len and source[i + 1] == '/') {
-            while (i < source.len and source[i] != '\n') {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            continue;
-        }
-
-        if (source[i] == '/' and i + 1 < source.len and source[i + 1] == '*') {
-            try out.append(allocator, '/');
-            try out.append(allocator, '*');
-            i += 2;
-            while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            if (i + 1 < source.len) {
-                try out.append(allocator, '*');
-                try out.append(allocator, '/');
-                i += 2;
-            }
+        if (skipTriviaOrLiteral(source, i)) |next_i| {
+            try out.appendSlice(allocator, source[i..next_i]);
+            i = next_i;
             continue;
         }
 
@@ -437,16 +572,21 @@ pub fn rewriteDoubleNegation(allocator: std.mem.Allocator, source: []const u8) !
     };
 }
 
-fn findMatchingParen(src: []const u8, open_idx: usize) ?usize {
+pub fn findMatchingParen(src: []const u8, open_idx: usize) ?usize {
     var depth: i32 = 0;
     var i = open_idx;
-    while (i < src.len) : (i += 1) {
+    while (i < src.len) {
+        if (skipTriviaOrLiteral(src, i)) |next_i| {
+            i = next_i;
+            continue;
+        }
         if (src[i] == '(') {
             depth += 1;
         } else if (src[i] == ')') {
             depth -= 1;
             if (depth == 0) return i;
         }
+        i += 1;
     }
     return null;
 }
@@ -459,48 +599,9 @@ pub fn rewriteDeMorgan(allocator: std.mem.Allocator, source: []const u8) !Rewrit
     var changes: usize = 0;
 
     while (i < source.len) {
-        if (source[i] == '"' or source[i] == '\'') {
-            const quote = source[i];
-            try out.append(allocator, quote);
-            i += 1;
-            while (i < source.len and source[i] != quote) {
-                if (source[i] == '\\' and i + 1 < source.len) {
-                    try out.append(allocator, source[i]);
-                    try out.append(allocator, source[i + 1]);
-                    i += 2;
-                } else {
-                    try out.append(allocator, source[i]);
-                    i += 1;
-                }
-            }
-            if (i < source.len) {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            continue;
-        }
-
-        if (source[i] == '/' and i + 1 < source.len and source[i + 1] == '/') {
-            while (i < source.len and source[i] != '\n') {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            continue;
-        }
-
-        if (source[i] == '/' and i + 1 < source.len and source[i + 1] == '*') {
-            try out.append(allocator, '/');
-            try out.append(allocator, '*');
-            i += 2;
-            while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) {
-                try out.append(allocator, source[i]);
-                i += 1;
-            }
-            if (i + 1 < source.len) {
-                try out.append(allocator, '*');
-                try out.append(allocator, '/');
-                i += 2;
-            }
+        if (skipTriviaOrLiteral(source, i)) |next_i| {
+            try out.appendSlice(allocator, source[i..next_i]);
+            i = next_i;
             continue;
         }
 
@@ -559,6 +660,10 @@ fn parseDeMorganInner(allocator: std.mem.Allocator, inner: []const u8) !?[]u8 {
 
         var paren_depth: i32 = 0;
         while (idx < trimmed.len) {
+            if (skipTriviaOrLiteral(trimmed, idx)) |next_idx| {
+                idx = next_idx;
+                continue;
+            }
             const ch = trimmed[idx];
             if (ch == '(') {
                 paren_depth += 1;
@@ -726,4 +831,68 @@ test "de morgan with outer comparison operator wrapping" {
     const res = try simplify(allocator, input);
     defer allocator.free(res);
     try std.testing.expectEqualStrings("const ok = x == (a && b);", res);
+}
+
+test "findConditionStart stops at arrow" {
+    const src = "const fn = x => cond ? true : false;";
+    const q_idx = std.mem.indexOf(u8, src, "?").?;
+    const start = findConditionStart(src, q_idx);
+    const cond = std.mem.trim(u8, src[start..q_idx], " \t\r\n");
+    try std.testing.expectEqualStrings("cond", cond);
+}
+
+test "arrow function ternary condition does not capture arrow" {
+    const allocator = std.testing.allocator;
+    const input = "const fn = x => cond ? false : true;";
+    const res = try simplify(allocator, input);
+    defer allocator.free(res);
+    try std.testing.expectEqualStrings("const fn = x => !cond;", res);
+}
+
+test "python comment in de morgan and double negation not corrupted" {
+    const allocator = std.testing.allocator;
+    const input = "# !(!a || !b)\nconst x = !!y;";
+    const res = try simplify(allocator, input);
+    defer allocator.free(res);
+    try std.testing.expectEqualStrings("# !(!a || !b)\nconst x = y;", res);
+}
+
+test "raw strings in de morgan and double negation not corrupted" {
+    const allocator = std.testing.allocator;
+    const input = "const s = r#\"odd \" quote !(!a || !b) and !!x\"#;";
+    const res = try simplify(allocator, input);
+    defer allocator.free(res);
+    try std.testing.expectEqualStrings("const s = r#\"odd \" quote !(!a || !b) and !!x\"#;", res);
+}
+
+test "string literals containing paren in ternary and negation" {
+    const allocator = std.testing.allocator;
+    const input1 = "const res = fn(\")\") ? false : true;";
+    const res1 = try simplify(allocator, input1);
+    defer allocator.free(res1);
+    try std.testing.expectEqualStrings("const res = !fn(\")\");", res1);
+
+    const input2 = "return !(!fn(\")\"));";
+    const res2 = try simplify(allocator, input2);
+    defer allocator.free(res2);
+    try std.testing.expectEqualStrings("return fn(\")\");", res2);
+
+    const input3 = "const x = !(!fn(\")\") || !b);";
+    const res3 = try simplify(allocator, input3);
+    defer allocator.free(res3);
+    try std.testing.expectEqualStrings("const x = (fn(\")\") && b);", res3);
+}
+
+test "rewriteTernaries does not emit Boolean in C# or if already boolean" {
+    const allocator = std.testing.allocator;
+
+    const js_bool = "return x === \"admin\" ? true : false;";
+    const res_js_bool = try simplify(allocator, js_bool);
+    defer allocator.free(res_js_bool);
+    try std.testing.expectEqualStrings("return x === \"admin\";", res_js_bool);
+
+    const cs_input = "public class C { bool Check(User user) { return user.enabled ? true : false; } }";
+    const res_cs = try simplify(allocator, cs_input);
+    defer allocator.free(res_cs);
+    try std.testing.expectEqualStrings("public class C { bool Check(User user) { return user.enabled; } }", res_cs);
 }

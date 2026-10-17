@@ -48,7 +48,7 @@ fn collectFunctions(
         const end = node.endPoint();
 
         var score: u32 = 0;
-        walkNode(node, source, lang, 0, &score);
+        walkNode(node, source, lang, 0, &score, true);
 
         try records.append(allocator, .{
             .name = name,
@@ -74,40 +74,62 @@ fn collectFunctions(
 }
 
 fn isFunctionNode(node: bindings.TSNode, lang: grammars.Language) bool {
-    const t = node.getType();
-    return switch (lang) {
-        .go => std.mem.eql(u8, t, "function_declaration") or std.mem.eql(u8, t, "method_declaration"),
-        .rust => std.mem.eql(u8, t, "function_item"),
-        .python => std.mem.eql(u8, t, "function_definition"),
-        .typescript, .tsx => blk: {
-            if (std.mem.eql(u8, t, "function_declaration") or std.mem.eql(u8, t, "method_definition")) {
-                break :blk true;
-            }
-            if (std.mem.eql(u8, t, "variable_declarator")) {
-                const val = node.childByFieldName("value");
-                if (!val.isNull()) {
-                    const vt = val.getType();
-                    if (std.mem.eql(u8, vt, "arrow_function") or std.mem.eql(u8, vt, "function_expression")) {
-                        break :blk true;
-                    }
-                }
-            }
-            break :blk false;
-        },
-        .c_sharp => std.mem.eql(u8, t, "method_declaration") or
-            std.mem.eql(u8, t, "local_function_statement") or
-            std.mem.eql(u8, t, "constructor_declaration"),
-        .unknown => false,
-    };
+    return grammars.isFunctionNode(node, lang);
 }
 
 fn getFunctionName(node: bindings.TSNode, source: []const u8, lang: grammars.Language) []const u8 {
-    _ = lang;
     const name_node = node.childByFieldName("name");
     if (!name_node.isNull()) {
         const name_slice = name_node.slice(source);
         if (name_slice.len > 0) return name_slice;
     }
+
+    const t = node.getType();
+    if (lang == .c_sharp and std.mem.eql(u8, t, "constructor_declaration")) {
+        var curr = node.parent();
+        while (!curr.isNull()) {
+            const pt = curr.getType();
+            if (std.mem.eql(u8, pt, "class_declaration") or
+                std.mem.eql(u8, pt, "struct_declaration") or
+                std.mem.eql(u8, pt, "record_declaration"))
+            {
+                const parent_name = curr.childByFieldName("name");
+                if (!parent_name.isNull()) {
+                    const s = parent_name.slice(source);
+                    if (s.len > 0) return s;
+                }
+                break;
+            }
+            curr = curr.parent();
+        }
+        return "constructor";
+    }
+
+    if ((lang == .typescript or lang == .tsx) and std.mem.eql(u8, t, "method_definition")) {
+        var i: u32 = 0;
+        const count = node.childCount();
+        while (i < count) : (i += 1) {
+            const ch = node.child(i);
+            if (std.mem.eql(u8, ch.getType(), "property_identifier")) {
+                const s = ch.slice(source);
+                if (s.len > 0) return s;
+            }
+        }
+        return "constructor";
+    }
+
+    if (lang == .go and std.mem.eql(u8, t, "method_declaration")) {
+        var i: u32 = 0;
+        const count = node.childCount();
+        while (i < count) : (i += 1) {
+            const ch = node.child(i);
+            if (std.mem.eql(u8, ch.getType(), "field_identifier")) {
+                const s = ch.slice(source);
+                if (s.len > 0) return s;
+            }
+        }
+    }
+
     return "anonymous";
 }
 
@@ -117,8 +139,11 @@ fn walkNode(
     lang: grammars.Language,
     nesting: u32,
     score: *u32,
+    is_root: bool,
 ) void {
     if (node.isNull()) return;
+
+    if (!is_root and isFunctionNode(node, lang)) return;
 
     const t = node.getType();
 
@@ -150,17 +175,28 @@ fn walkNode(
         score.* += 1 + nesting;
         next_nesting = nesting + 1;
     } else if (isClosureNode(t, lang)) {
-        next_nesting = nesting + 1;
+        if (!is_root) {
+            next_nesting = nesting + 1;
+        }
     } else if (getLogicalOperator(node, source, lang)) |op| {
         if (!parentHasSameLogicalOperator(node, op, source, lang)) {
             score.* += 1;
         }
     }
 
+    const is_var_decl = is_root and std.mem.eql(u8, t, "variable_declarator");
+
     var i: u32 = 0;
     const count = node.childCount();
     while (i < count) : (i += 1) {
-        walkNode(node.child(i), source, lang, next_nesting, score);
+        const ch = node.child(i);
+        const child_nesting = if (lang == .python and (std.mem.eql(u8, ch.getType(), "elif_clause") or std.mem.eql(u8, ch.getType(), "else_clause")))
+            nesting
+        else
+            next_nesting;
+        const ch_type = ch.getType();
+        const ch_is_root = is_var_decl and (std.mem.eql(u8, ch_type, "arrow_function") or std.mem.eql(u8, ch_type, "function_expression"));
+        walkNode(ch, source, lang, child_nesting, score, ch_is_root);
     }
 }
 
@@ -182,30 +218,7 @@ fn isIfNode(node_type: []const u8, lang: grammars.Language) bool {
 }
 
 fn isElseIf(node: bindings.TSNode, lang: grammars.Language) bool {
-    const t = node.getType();
-    if (lang == .python and std.mem.eql(u8, t, "elif_clause")) {
-        return true;
-    }
-
-    const p = node.parent();
-    if (p.isNull()) return false;
-    const pt = p.getType();
-
-    if (lang == .go) {
-        if (std.mem.eql(u8, pt, "if_statement")) {
-            const alt = p.childByFieldName("alternative");
-            if (!alt.isNull() and alt.startByte() == node.startByte()) return true;
-        }
-    } else if (lang == .rust) {
-        if (std.mem.eql(u8, pt, "else_clause") or std.mem.eql(u8, pt, "if_expression")) {
-            return true;
-        }
-    } else {
-        if (std.mem.eql(u8, pt, "else_clause")) {
-            return true;
-        }
-    }
-    return false;
+    return grammars.isElseIfNode(node, lang);
 }
 
 fn isElseNode(node: bindings.TSNode, source: []const u8, lang: grammars.Language) bool {
@@ -296,47 +309,11 @@ fn isCatchNode(node_type: []const u8, lang: grammars.Language) bool {
 }
 
 fn isClosureNode(node_type: []const u8, lang: grammars.Language) bool {
-    return switch (lang) {
-        .go => std.mem.eql(u8, node_type, "func_literal"),
-        .rust => std.mem.eql(u8, node_type, "closure_expression"),
-        .python => std.mem.eql(u8, node_type, "lambda"),
-        .typescript, .tsx => std.mem.eql(u8, node_type, "arrow_function") or
-            std.mem.eql(u8, node_type, "function_expression"),
-        .c_sharp => std.mem.eql(u8, node_type, "lambda_expression") or
-            std.mem.eql(u8, node_type, "anonymous_method_expression"),
-        .unknown => false,
-    };
+    return lang.isClosure(node_type);
 }
 
 fn getLogicalOperator(node: bindings.TSNode, source: []const u8, lang: grammars.Language) ?[]const u8 {
-    const t = node.getType();
-    if (lang == .python) {
-        if (std.mem.eql(u8, t, "boolean_operator")) {
-            var i: u32 = 0;
-            const count = node.childCount();
-            while (i < count) : (i += 1) {
-                const ch = node.child(i);
-                const slice = ch.slice(source);
-                if (std.mem.eql(u8, slice, "and") or std.mem.eql(u8, slice, "or")) {
-                    return slice;
-                }
-            }
-        }
-        return null;
-    }
-
-    if (std.mem.eql(u8, t, "binary_expression")) {
-        var i: u32 = 0;
-        const count = node.childCount();
-        while (i < count) : (i += 1) {
-            const ch = node.child(i);
-            const slice = ch.slice(source);
-            if (std.mem.eql(u8, slice, "&&") or std.mem.eql(u8, slice, "||")) {
-                return slice;
-            }
-        }
-    }
-    return null;
+    return grammars.getLogicalOperator(node, source, lang);
 }
 
 fn parentHasSameLogicalOperator(
@@ -469,3 +446,175 @@ test "calculateComplexity - C# sample with nullable types and null conditional" 
     try std.testing.expectEqualStrings("Process", funcs[0].name);
     try std.testing.expectEqual(@as(u32, 3), funcs[0].complexity);
 }
+
+test "calculateComplexity - outer function does not double-count inner function statements" {
+    const source =
+        \\function outer(a: boolean): void {
+        \\    if (a) {
+        \\        doA();
+        \\    }
+        \\    function inner(b: boolean): void {
+        \\        if (b) {
+        \\            doB();
+        \\        }
+        \\    }
+        \\}
+    ;
+
+    const funcs = try calculateComplexity(std.testing.allocator, source, .typescript);
+    defer std.testing.allocator.free(funcs);
+
+    try std.testing.expectEqual(@as(usize, 2), funcs.len);
+    try std.testing.expectEqualStrings("outer", funcs[0].name);
+    try std.testing.expectEqual(@as(u32, 1), funcs[0].complexity);
+    try std.testing.expectEqualStrings("inner", funcs[1].name);
+    try std.testing.expectEqual(@as(u32, 1), funcs[1].complexity);
+}
+
+test "calculateComplexity - C# and TypeScript constructors resolve name instead of anonymous" {
+    // TypeScript constructor
+    {
+        const source =
+            \\class UserService {
+            \\    constructor(config: any) {
+            \\        if (config.ready) {
+            \\            init();
+            \\        }
+            \\    }
+            \\}
+        ;
+
+        const funcs = try calculateComplexity(std.testing.allocator, source, .typescript);
+        defer std.testing.allocator.free(funcs);
+
+        try std.testing.expectEqual(@as(usize, 1), funcs.len);
+        try std.testing.expectEqualStrings("constructor", funcs[0].name);
+        try std.testing.expectEqual(@as(u32, 1), funcs[0].complexity);
+    }
+
+    // C# constructor
+    {
+        const source =
+            \\public class OrderProcessor {
+            \\    public OrderProcessor(int id) {
+            \\        if (id > 0) {
+            \\            Process();
+            \\        }
+            \\    }
+            \\}
+        ;
+
+        const funcs = try calculateComplexity(std.testing.allocator, source, .c_sharp);
+        defer std.testing.allocator.free(funcs);
+
+        try std.testing.expectEqual(@as(usize, 1), funcs.len);
+        try std.testing.expect(std.mem.eql(u8, funcs[0].name, "OrderProcessor") or std.mem.eql(u8, funcs[0].name, "constructor"));
+        try std.testing.expect(!std.mem.eql(u8, funcs[0].name, "anonymous"));
+        try std.testing.expectEqual(@as(u32, 1), funcs[0].complexity);
+    }
+}
+
+test "calculateComplexity - Python and C# nested functions do not double count" {
+    // Python nested function
+    {
+        const source =
+            \\def outer(x):
+            \\    if x > 0:
+            \\        pass
+            \\    def inner(y):
+            \\        if y > 0:
+            \\            pass
+        ;
+
+        const funcs = try calculateComplexity(std.testing.allocator, source, .python);
+        defer std.testing.allocator.free(funcs);
+
+        try std.testing.expectEqual(@as(usize, 2), funcs.len);
+        try std.testing.expectEqualStrings("outer", funcs[0].name);
+        try std.testing.expectEqual(@as(u32, 1), funcs[0].complexity);
+        try std.testing.expectEqualStrings("inner", funcs[1].name);
+        try std.testing.expectEqual(@as(u32, 1), funcs[1].complexity);
+    }
+
+    // C# local function
+    {
+        const source =
+            \\public class Worker {
+            \\    public void Run(bool flag) {
+            \\        if (flag) {}
+            \\        void Helper(bool inner) {
+            \\            if (inner) {}
+            \\        }
+            \\    }
+            \\}
+        ;
+
+        const funcs = try calculateComplexity(std.testing.allocator, source, .c_sharp);
+        defer std.testing.allocator.free(funcs);
+
+        try std.testing.expectEqual(@as(usize, 2), funcs.len);
+        try std.testing.expectEqualStrings("Run", funcs[0].name);
+        try std.testing.expectEqual(@as(u32, 1), funcs[0].complexity);
+        try std.testing.expectEqualStrings("Helper", funcs[1].name);
+        try std.testing.expectEqual(@as(u32, 1), funcs[1].complexity);
+    }
+}
+
+test "calculateComplexity - Go method with receiver name resolution" {
+    const source =
+        \\package main
+        \\
+        \\type Service struct{}
+        \\
+        \\func (s *Service) Execute(x int) bool {
+        \\    if x > 0 {
+        \\        return true
+        \\    }
+        \\    return false
+        \\}
+    ;
+
+    const funcs = try calculateComplexity(std.testing.allocator, source, .go);
+    defer std.testing.allocator.free(funcs);
+
+    try std.testing.expectEqual(@as(usize, 1), funcs.len);
+    try std.testing.expectEqualStrings("Execute", funcs[0].name);
+    try std.testing.expectEqual(@as(u32, 1), funcs[0].complexity);
+}
+
+test "calculateComplexity - Python elif does not double nest" {
+    const source =
+        \\def check(x, y):
+        \\    if x == 1:
+        \\        if y == 1:
+        \\            pass
+        \\    elif x == 2:
+        \\        if y == 2:
+        \\            pass
+    ;
+
+    const funcs = try calculateComplexity(std.testing.allocator, source, .python);
+    defer std.testing.allocator.free(funcs);
+
+    try std.testing.expectEqual(@as(usize, 1), funcs.len);
+    try std.testing.expectEqualStrings("check", funcs[0].name);
+    try std.testing.expectEqual(@as(u32, 6), funcs[0].complexity);
+}
+
+test "calculateComplexity - TypeScript arrow function in variable_declarator" {
+    const source =
+        \\const check = (a: boolean) => {
+        \\    if (a) {
+        \\        doSomething();
+        \\    }
+        \\};
+    ;
+
+    const funcs = try calculateComplexity(std.testing.allocator, source, .typescript);
+    defer std.testing.allocator.free(funcs);
+
+    try std.testing.expectEqual(@as(usize, 1), funcs.len);
+    try std.testing.expectEqualStrings("check", funcs[0].name);
+    try std.testing.expectEqual(@as(u32, 1), funcs[0].complexity);
+}
+

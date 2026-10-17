@@ -1,7 +1,8 @@
 const std = @import("std");
 const server = @import("../mcp/server.zig");
 
-pub fn run(allocator: std.mem.Allocator, args: []const []const u8, io: std.Io, stdout: std.Io.File) !u8 {
+pub fn run(allocator: std.mem.Allocator, args: []const []const u8, io: std.Io, stdout: std.Io.File, stderr: std.Io.File) !u8 {
+    _ = stderr;
     var out_list: std.ArrayList(u8) = .empty;
     defer out_list.deinit(allocator);
 
@@ -32,6 +33,7 @@ pub fn executeComplexity(allocator: std.mem.Allocator, args: []const []const u8,
     }
 
     var total_exit: u8 = 0;
+    var exceeded_count: usize = 0;
     for (paths_list.items) |path| {
         var json_args = std.json.Value{
             .object = .empty,
@@ -50,20 +52,33 @@ pub fn executeComplexity(allocator: std.mem.Allocator, args: []const []const u8,
         if (res.text.len > 0 and res.text[res.text.len - 1] != '\n') {
             try out_list.append(allocator, '\n');
         }
-        if (res.is_error) total_exit = 1;
+        if (res.is_error) exceeded_count += 1;
+        exceeded_count += res.count;
     }
 
+    total_exit = if (exceeded_count > 0) 1 else 0;
     return total_exit;
 }
 
-test "complexity cli execution" {
+test "complexity cli execution exceeding threshold returns exit code 1" {
     const allocator = std.testing.allocator;
     const args = [_][]const u8{ "tests/fixtures/dirty/noisy_python.py", "--threshold=5", "--format=compact" };
     var out_list: std.ArrayList(u8) = .empty;
     defer out_list.deinit(allocator);
 
     const code = try executeComplexity(allocator, &args, &out_list);
-    try std.testing.expectEqual(0, code);
+    try std.testing.expectEqual(1, code);
     try std.testing.expect(std.mem.indexOf(u8, out_list.items, "[COMPLEXITY]") != null);
+}
+
+test "complexity cli execution within threshold returns exit code 0" {
+    const allocator = std.testing.allocator;
+    const args = [_][]const u8{ "tests/fixtures/dirty/noisy_python.py", "--threshold=100", "--format=compact" };
+    var out_list: std.ArrayList(u8) = .empty;
+    defer out_list.deinit(allocator);
+
+    const code = try executeComplexity(allocator, &args, &out_list);
+    try std.testing.expectEqual(0, code);
+    try std.testing.expect(std.mem.indexOf(u8, out_list.items, "0 (threshold: 100)") != null);
 }
 
