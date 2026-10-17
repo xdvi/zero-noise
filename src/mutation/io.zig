@@ -75,7 +75,11 @@ pub fn isDirectory(filepath_z: [*:0]const u8, fd: ?c_int) bool {
 }
 
 pub fn atomicRename(src_path_z: [*:0]const u8, dst_path_z: [*:0]const u8) bool {
-    if (std.c.rename(src_path_z, dst_path_z) == 0) return true;
+    if (std.c.rename(src_path_z, dst_path_z) == 0) {
+        const dst = std.mem.sliceTo(dst_path_z, 0);
+        invalidateFileCache(dst);
+        return true;
+    }
     return false;
 }
 
@@ -119,6 +123,11 @@ pub fn checkWorkspaceConfinement(allocator: std.mem.Allocator, filepath: []const
 }
 
 pub fn readFileAlloc(allocator: std.mem.Allocator, filepath: []const u8) ![]u8 {
+    // Global content cache to avoid repeated disk reads in a process.
+    if (lookupFileCache(allocator, filepath)) |cached| {
+        return cached;
+    }
+
     const path_z = try allocator.dupeSentinel(u8, filepath, 0);
     defer allocator.free(path_z);
 
@@ -147,7 +156,9 @@ pub fn readFileAlloc(allocator: std.mem.Allocator, filepath: []const u8) ![]u8 {
         read_bytes = readFileBytes(f, buf, size) catch return error.FileReadError;
     }
 
-    return buf[0..read_bytes];
+    const result = buf[0..read_bytes];
+    storeFileCache(allocator, filepath, result);
+    return result;
 }
 
 pub fn writeFile(filepath_z: [*:0]const u8, content: []const u8) !void {
@@ -161,6 +172,9 @@ pub fn writeFile(filepath_z: [*:0]const u8, content: []const u8) !void {
         written_total += n;
     }
     if (fflush(f) != 0) return error.FileWriteError;
+
+    const path_slice = std.mem.sliceTo(filepath_z, 0);
+    invalidateFileCache(path_slice);
 }
 
 fn readFileBytes(f: *std.c.FILE, buf: []u8, size: usize) !usize {
@@ -175,4 +189,89 @@ fn readFileBytes(f: *std.c.FILE, buf: []u8, size: usize) !usize {
     }
     if (read_bytes != size) return error.FileReadError;
     return read_bytes;
+}
+
+const FileCacheEntry = struct {
+    path: []u8,
+    mtime: i64,
+    size: i64,
+    content: []u8,
+};
+
+var file_cache: std.ArrayList(FileCacheEntry) = .empty;
+const file_cache_allocator = std.heap.page_allocator;
+
+fn getFileMtimeAndSize(filepath_z: [*:0]const u8) ?struct { mtime: i64, size: i64 } {
+    if (builtin.os.tag == .linux) {
+        var stx: std.os.linux.Statx = undefined;
+        const rc = std.os.linux.statx(std.posix.AT.FDCWD, filepath_z, 0, std.os.linux.STATX.BASIC_STATS, &stx);
+        if (rc != 0) return null;
+        return .{ .mtime = stx.mtime.sec, .size = @intCast(stx.size) };
+    }
+    var st: std.c.Stat = undefined;
+    if (std.c.stat(filepath_z, &st) != 0) return null;
+    return .{ .mtime = st.mtime, .size = st.size };
+}
+
+fn lookupFileCache(allocator: std.mem.Allocator, filepath: []const u8) ?[]u8 {
+    const meta = blk: {
+        const path_z = allocator.dupeSentinel(u8, filepath, 0) catch return null;
+        defer allocator.free(path_z);
+        break :blk getFileMtimeAndSize(path_z.ptr) orelse return null;
+    };
+
+    for (file_cache.items) |entry| {
+        if (std.mem.eql(u8, entry.path, filepath) and entry.mtime == meta.mtime and entry.size == meta.size) {
+            return allocator.dupe(u8, entry.content) catch null;
+        }
+    }
+    return null;
+}
+
+fn storeFileCache(allocator: std.mem.Allocator, filepath: []const u8, content: []const u8) void {
+    const meta = blk: {
+        const path_z = allocator.dupeSentinel(u8, filepath, 0) catch return;
+        defer allocator.free(path_z);
+        break :blk getFileMtimeAndSize(path_z.ptr) orelse return;
+    };
+
+    // Remove old entry for same path
+    var i: usize = 0;
+    while (i < file_cache.items.len) {
+        if (std.mem.eql(u8, file_cache.items[i].path, filepath)) {
+            const old = file_cache.orderedRemove(i);
+            file_cache_allocator.free(old.path);
+            file_cache_allocator.free(old.content);
+            continue;
+        }
+        i += 1;
+    }
+
+    const path_dup = file_cache_allocator.dupe(u8, filepath) catch return;
+    const content_dup = file_cache_allocator.dupe(u8, content) catch {
+        file_cache_allocator.free(path_dup);
+        return;
+    };
+    file_cache.append(file_cache_allocator, .{
+        .path = path_dup,
+        .mtime = meta.mtime,
+        .size = meta.size,
+        .content = content_dup,
+    }) catch {
+        file_cache_allocator.free(path_dup);
+        file_cache_allocator.free(content_dup);
+    };
+}
+
+fn invalidateFileCache(filepath: []const u8) void {
+    var i: usize = 0;
+    while (i < file_cache.items.len) {
+        if (std.mem.eql(u8, file_cache.items[i].path, filepath)) {
+            const old = file_cache.orderedRemove(i);
+            file_cache_allocator.free(old.path);
+            file_cache_allocator.free(old.content);
+            continue;
+        }
+        i += 1;
+    }
 }
