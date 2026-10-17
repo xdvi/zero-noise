@@ -6,6 +6,7 @@ const blast = @import("../../analysis/blast.zig");
 const runner = @import("../../mutation/runner.zig");
 const deps_mod = @import("../deps.zig");
 const ledger_mod = @import("../../storage/ledger.zig");
+const db_mod = @import("../../storage/db.zig");
 
 const ToolResult = common.ToolResult;
 
@@ -50,39 +51,26 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
     var target_patch: ?[]const u8 = null;
     defer if (target_patch) |tp| allocator.free(tp);
 
-    if (patch_file) |pf| {
-        if (runner.checkWorkspaceConfinement(allocator, pf) catch false) {
-            target_patch = deps.fs.readFileAlloc(allocator, pf) catch null;
-        } else {
-            const text = try std.fmt.allocPrint(allocator, "Error: patch file is outside workspace: {s}", .{pf});
+    target_patch = loadPatchFile(allocator, deps, patch_file) catch |err| {
+        if (err == error.PatchOutsideWorkspace) {
+            const text = try std.fmt.allocPrint(allocator, "Error: patch file is outside workspace: {s}", .{patch_file.?});
             return ToolResult{ .text = text, .is_error = true };
         }
-    }
+        return err;
+    };
 
-    var maybe_db = deps.db.open(allocator, root) catch null;
-    defer if (maybe_db) |*db| db.close();
+    var setup = try prepareSafeRefactorSetup(allocator, deps, parsed, filepath, root, expected_hash);
+    defer if (setup.task_id) |tid| allocator.free(tid);
+    defer if (setup.maybe_db) |*db| db.close();
 
-    var maybe_ledger: ?ledger_mod.RefactorLedger = null;
-    var task_id: ?[]const u8 = null;
-    defer if (task_id) |tid| allocator.free(tid);
-
-    if (maybe_db) |db| {
-        maybe_ledger = ledger_mod.RefactorLedger.init(db, allocator);
-        if (maybe_ledger) |*ledger| {
-            task_id = ledger.createTask(filepath, expected_hash orelse "unlocked", 0, 0) catch null;
-        }
-    }
-
-    const force = parsed.force;
-    const fix = parsed.fix;
+    const force = setup.force;
+    const fix = setup.fix;
+    const maybe_ledger = setup.maybe_ledger;
+    const task_id = setup.task_id;
 
     // Enforcement of max_blast_risk
-    if (max_blast_risk_str) |mbr| {
-        if (!force) {
-            if (try enforceBlastRisk(allocator, filepath, root, mbr, deps, maybe_ledger, task_id, format, expected_hash)) |blocked| {
-                return blocked;
-            }
-        }
+    if (try enforceBlastRisk(allocator, filepath, root, max_blast_risk_str, force, deps, maybe_ledger, task_id, format, expected_hash)) |blocked| {
+        return blocked;
     }
 
     const simplified_from_deps = prepareCandidate(allocator, deps, filepath, candidate_content, patch_file, target_patch);
@@ -90,36 +78,19 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
 
     const effective_candidate = if (candidate_content) |cc| cc else simplified_from_deps;
 
-    var result = runner.executeSafeRefactor(allocator, .{
-        .filepath = filepath,
-        .hash = .{ .expected_hash = expected_hash },
-        .test_run = .{ .test_cmd = test_cmd },
-        .fix = fix,
-        .patch = .{
-            .candidate_content = effective_candidate,
-            .patch_file = patch_file,
-            .patch_content = target_patch,
-        },
-    }) catch |err| {
-        if (maybe_ledger) |*ledger| {
-            if (task_id) |tid| {
-                ledger.updateTaskStatus(tid, "aborted") catch {};
-            }
-        }
-        const text = try std.fmt.allocPrint(allocator, "Safe refactor error: {s}", .{@errorName(err)});
-        return ToolResult{ .text = text, .is_error = true };
-    };
-    defer result.deinit(allocator);
-
-    const status_str = result.status.asString();
-
-    if (maybe_ledger) |*ledger| {
-        if (task_id) |tid| {
-            ledger.updateTaskStatus(tid, status_str) catch {};
-        }
-    }
-
-    return formatSafeRefactorResult(allocator, filepath, format, status_str, result, expected_hash);
+    return runSafeRefactorAndFormat(
+        allocator,
+        filepath,
+        format,
+        expected_hash,
+        test_cmd,
+        fix,
+        patch_file,
+        target_patch,
+        effective_candidate,
+        maybe_ledger,
+        task_id,
+    );
 }
 
 fn formatSafeRefactorResult(
@@ -173,14 +144,17 @@ fn enforceBlastRisk(
     allocator: std.mem.Allocator,
     filepath: []const u8,
     root: []const u8,
-    mbr: []const u8,
+    mbr: ?[]const u8,
+    force: bool,
     deps: *const deps_mod.Deps,
     maybe_ledger: ?ledger_mod.RefactorLedger,
     task_id: ?[]const u8,
     format: []const u8,
     expected_hash: ?[]const u8,
 ) !?ToolResult {
-    const allowed_level = parseRiskLevel(mbr) orelse return null;
+    if (force) return null;
+    const mbr_str = mbr orelse return null;
+    const allowed_level = parseRiskLevel(mbr_str) orelse return null;
 
     const target_content = deps.fs.readFileAlloc(allocator, filepath) catch return null;
     defer allocator.free(target_content);
@@ -209,7 +183,7 @@ fn enforceBlastRisk(
     const err_msg = try std.fmt.allocPrint(
         allocator,
         "Blast radius risk '{s}' exceeds maximum allowed risk '{s}' (use force=true to override)",
-        .{ actual_risk.asString(), mbr },
+        .{ actual_risk.asString(), mbr_str },
     );
     defer allocator.free(err_msg);
 
@@ -240,6 +214,89 @@ fn parseRiskLevel(s: []const u8) ?blast.RiskLevel {
     return null;
 }
 
+const SafeRefactorSetup = struct {
+    target_patch: ?[]u8,
+    maybe_db: ?db_mod.Database,
+    maybe_ledger: ?ledger_mod.RefactorLedger,
+    task_id: ?[]const u8,
+    force: bool,
+    fix: bool,
+};
+
+fn loadPatchFile(allocator: std.mem.Allocator, deps: *const deps_mod.Deps, patch_file: ?[]const u8) !?[]u8 {
+    const pf = patch_file orelse return null;
+    if (!(runner.checkWorkspaceConfinement(allocator, pf) catch false)) return error.PatchOutsideWorkspace;
+    return deps.fs.readFileAlloc(allocator, pf) catch null;
+}
+
+fn prepareSafeRefactorSetup(
+    allocator: std.mem.Allocator,
+    deps: *const deps_mod.Deps,
+    parsed: Args,
+    filepath: []const u8,
+    root: []const u8,
+    expected_hash: ?[]const u8,
+) !SafeRefactorSetup {
+    const maybe_db = deps.db.open(allocator, root) catch null;
+    var maybe_ledger: ?ledger_mod.RefactorLedger = null;
+    var task_id: ?[]const u8 = null;
+    if (maybe_db) |db| {
+        maybe_ledger = ledger_mod.RefactorLedger.init(db, allocator);
+        if (maybe_ledger) |*ledger| {
+            task_id = ledger.createTask(filepath, expected_hash orelse "unlocked", 0, 0) catch null;
+        }
+    }
+
+    return SafeRefactorSetup{
+        .target_patch = null,
+        .maybe_db = maybe_db,
+        .maybe_ledger = maybe_ledger,
+        .task_id = task_id,
+        .force = parsed.force,
+        .fix = parsed.fix,
+    };
+}
+
+fn runSafeRefactorAndFormat(
+    allocator: std.mem.Allocator,
+    filepath: []const u8,
+    format: []const u8,
+    expected_hash: ?[]const u8,
+    test_cmd: ?[]const u8,
+    fix: bool,
+    patch_file: ?[]const u8,
+    target_patch: ?[]const u8,
+    effective_candidate: ?[]const u8,
+    maybe_ledger: ?ledger_mod.RefactorLedger,
+    task_id: ?[]const u8,
+) !ToolResult {
+    var ledger = maybe_ledger;
+    var result = runner.executeSafeRefactor(allocator, .{
+        .filepath = filepath,
+        .hash = .{ .expected_hash = expected_hash },
+        .test_run = .{ .test_cmd = test_cmd },
+        .fix = fix,
+        .patch = .{
+            .candidate_content = effective_candidate,
+            .patch_file = patch_file,
+            .patch_content = target_patch,
+        },
+    }) catch |err| {
+        if (ledger) |*l| {
+            if (task_id) |tid| {
+                l.updateTaskStatus(tid, "aborted") catch {};
+            }
+        }
+        const text = try std.fmt.allocPrint(allocator, "Safe refactor error: {s}", .{@errorName(err)});
+        return ToolResult{ .text = text, .is_error = true };
+    };
+    defer result.deinit(allocator);
+
+    const status_str = result.status.asString();
+    updateLedgerStatus(ledger, task_id, status_str);
+    return formatSafeRefactorResult(allocator, filepath, format, status_str, result, expected_hash);
+}
+
 fn prepareCandidate(
     allocator: std.mem.Allocator,
     deps: *const deps_mod.Deps,
@@ -252,4 +309,13 @@ fn prepareCandidate(
     const original_content = deps.fs.readFileAlloc(allocator, filepath) catch return null;
     defer allocator.free(original_content);
     return deps.simplify(allocator, original_content) catch null;
+}
+
+fn updateLedgerStatus(ledger: ?ledger_mod.RefactorLedger, task_id: ?[]const u8, status: []const u8) void {
+    if (ledger) |l| {
+        var ll = l;
+        if (task_id) |tid| {
+            ll.updateTaskStatus(tid, status) catch {};
+        }
+    }
 }
