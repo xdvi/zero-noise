@@ -285,38 +285,36 @@ pub fn blastRadius(
         const text = try compact.formatBlast(allocator, symbol, defs_count, refs_count, files_count, risk);
         return common.ToolResult{ .text = text, .is_error = false };
     }
-
     if (std.mem.eql(u8, format, "json")) {
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        try buf.appendSlice(allocator, "{\"symbol\":");
-        try common.appendJsonEscaped(&buf, allocator, symbol);
-        try buf.print(allocator, ",\"definitions\":{d},\"references\":{d},\"files\":{d},\"risk\":", .{
-            defs_count, refs_count, files_count,
-        });
-        try common.appendJsonEscaped(&buf, allocator, risk);
-        try buf.appendSlice(allocator, ",\"usages\":[");
-        for (items, 0..) |ref, idx| {
-            if (idx > 0) try buf.append(allocator, ',');
-            try buf.appendSlice(allocator, "{\"file\":");
-            try common.appendJsonEscaped(&buf, allocator, ref.file);
-            try buf.print(allocator, ",\"line\":{d},\"column\":{d},\"is_definition\":{s}}}", .{
-                ref.line, ref.column, if (ref.is_definition) "true" else "false",
-            });
-        }
-        try buf.appendSlice(allocator, "]}");
-        return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false };
+        return formatBlastJson(allocator, symbol, defs_count, refs_count, files_count, risk, items);
     }
+    return formatBlastText(allocator, symbol, defs_count, refs_count, files_count, risk, items);
+}
 
-    const risk_upper = if (std.mem.eql(u8, risk, "low"))
-        "LOW"
-    else if (std.mem.eql(u8, risk, "medium"))
-        "MEDIUM"
-    else if (std.mem.eql(u8, risk, "high"))
-        "HIGH"
-    else
-        risk;
+fn formatBlastJson(allocator: std.mem.Allocator, symbol: []const u8, defs_count: u32, refs_count: u32, files_count: u32, risk: []const u8, items: anytype) !common.ToolResult {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "{\"symbol\":");
+    try common.appendJsonEscaped(&buf, allocator, symbol);
+    try buf.print(allocator, ",\"definitions\":{d},\"references\":{d},\"files\":{d},\"risk\":", .{
+        defs_count, refs_count, files_count,
+    });
+    try common.appendJsonEscaped(&buf, allocator, risk);
+    try buf.appendSlice(allocator, ",\"usages\":[");
+    for (items, 0..) |ref, idx| {
+        if (idx > 0) try buf.append(allocator, ',');
+        try buf.appendSlice(allocator, "{\"file\":");
+        try common.appendJsonEscaped(&buf, allocator, ref.file);
+        try buf.print(allocator, ",\"line\":{d},\"column\":{d},\"is_definition\":{s}}}", .{
+            ref.line, ref.column, if (ref.is_definition) "true" else "false",
+        });
+    }
+    try buf.appendSlice(allocator, "]}");
+    return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false };
+}
 
+fn formatBlastText(allocator: std.mem.Allocator, symbol: []const u8, defs_count: u32, refs_count: u32, files_count: u32, risk: []const u8, items: anytype) !common.ToolResult {
+    const risk_upper = riskUpper(risk);
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try buf.print(allocator, "Blast Radius for '{s}': Risk level {s} ({d} definition, {d} references across {d} file(s)).\n", .{
@@ -332,4 +330,11 @@ pub fn blastRadius(
         });
     }
     return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false };
+}
+
+fn riskUpper(risk: []const u8) []const u8 {
+    if (std.mem.eql(u8, risk, "low")) return "LOW";
+    if (std.mem.eql(u8, risk, "medium")) return "MEDIUM";
+    if (std.mem.eql(u8, risk, "high")) return "HIGH";
+    return risk;
 }
