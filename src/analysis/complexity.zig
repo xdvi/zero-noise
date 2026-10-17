@@ -161,38 +161,7 @@ fn walkNode(
     if (isIgnoredNode(t)) return;
 
     var next_nesting = nesting;
-
-    if (lang.isIfNode(t)) {
-        if (lang.isElseIfNode(node)) {
-            score.* += 1;
-        } else {
-            score.* += 1 + nesting;
-        }
-        next_nesting = nesting + 1;
-    } else if (lang.isElseNode(node)) {
-        score.* += 1;
-        next_nesting = nesting + 1;
-    } else if (lang.isTernaryNode(t)) {
-        score.* += 1 + nesting;
-        next_nesting = nesting + 1;
-    } else if (lang.isSwitchNode(t)) {
-        score.* += 1 + nesting;
-        next_nesting = nesting + 1;
-    } else if (lang.isLoopNode(t)) {
-        score.* += 1 + nesting;
-        next_nesting = nesting + 1;
-    } else if (lang.isCatchNode(t)) {
-        score.* += 1 + nesting;
-        next_nesting = nesting + 1;
-    } else if (lang.isClosure(t)) {
-        if (!is_root) {
-            next_nesting = nesting + 1;
-        }
-    } else if (getLogicalOperator(node, source, lang)) |op| {
-        if (!parentHasSameLogicalOperator(node, op, source, lang)) {
-            score.* += 1;
-        }
-    }
+    next_nesting = applyComplexityForNode(node, t, lang, source, nesting, score, is_root);
 
     const is_var_decl = is_root and std.mem.eql(u8, t, "variable_declarator");
 
@@ -207,6 +176,50 @@ fn walkNode(
         const ch_type = ch.getType();
         const ch_is_root = is_var_decl and (std.mem.eql(u8, ch_type, "arrow_function") or std.mem.eql(u8, ch_type, "function_expression"));
         walkNode(ch, source, lang, child_nesting, score, ch_is_root);
+    }
+}
+
+fn applyComplexityForNode(node: bindings.TSNode, t: []const u8, lang: grammars.Language, source: []const u8, nesting: u32, score: *u32, is_root: bool) u32 {
+    if (lang.isIfNode(t)) {
+        if (lang.isElseIfNode(node)) {
+            score.* += 1;
+        } else {
+            score.* += 1 + nesting;
+        }
+        return nesting + 1;
+    }
+    if (lang.isElseNode(node)) {
+        score.* += 1;
+        return nesting + 1;
+    }
+    if (lang.isTernaryNode(t)) {
+        score.* += 1 + nesting;
+        return nesting + 1;
+    }
+    if (lang.isSwitchNode(t)) {
+        score.* += 1 + nesting;
+        return nesting + 1;
+    }
+    if (lang.isLoopNode(t)) {
+        score.* += 1 + nesting;
+        return nesting + 1;
+    }
+    if (lang.isCatchNode(t)) {
+        score.* += 1 + nesting;
+        return nesting + 1;
+    }
+    if (lang.isClosure(t)) {
+        if (is_root) return nesting;
+        return nesting + 1;
+    }
+    scoreLogicalOperator(node, source, lang, score);
+    return nesting;
+}
+
+fn scoreLogicalOperator(node: bindings.TSNode, source: []const u8, lang: grammars.Language, score: *u32) void {
+    const op = getLogicalOperator(node, source, lang) orelse return;
+    if (!parentHasSameLogicalOperator(node, op, source, lang)) {
+        score.* += 1;
     }
 }
 
