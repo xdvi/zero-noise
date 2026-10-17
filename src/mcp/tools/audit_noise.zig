@@ -59,33 +59,7 @@ pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
     }
 
     if (parsed.config) |cfg_path| {
-        if (deps.fs.readFileAlloc(allocator, cfg_path)) |cfg_content| {
-            defer allocator.free(cfg_content);
-            if (std.json.parseFromSlice(std.json.Value, allocator, cfg_content, .{})) |parsed_cfg| {
-                defer parsed_cfg.deinit();
-                if (parsed_cfg.value == .object) {
-                    if (parsed_cfg.value.object.get("max_nesting")) |v| {
-                        if (v == .integer and v.integer >= 0) {
-                            noise_cfg.max_nesting = @intCast(v.integer);
-                        }
-                    }
-                    if (parsed_cfg.value.object.get("max_closure_len")) |v| {
-                        if (v == .integer and v.integer >= 0) {
-                            noise_cfg.max_closure_len = @intCast(v.integer);
-                        }
-                    }
-                    if (parsed_cfg.value.object.get("ignore_patterns")) |v| {
-                        if (v == .array) {
-                            for (v.array.items) |item| {
-                                if (item == .string) {
-                                    try ignore_patterns.append(allocator, try allocator.dupe(u8, item.string));
-                                }
-                            }
-                        }
-                    }
-                }
-            } else |_| {}
-        } else |_| {}
+        loadNoiseConfig(allocator, deps, cfg_path, &noise_cfg, &ignore_patterns);
     }
 
     var files_list: std.ArrayList([]const u8) = .empty;
@@ -137,6 +111,43 @@ pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
 pub fn executeAuditNoise(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
     const default = deps_mod.defaultDeps();
     return executeAuditNoiseWithDeps(allocator, args, &default);
+}
+
+fn loadNoiseConfig(
+    allocator: std.mem.Allocator,
+    deps: *const deps_mod.Deps,
+    cfg_path: []const u8,
+    noise_cfg: *noise.NoiseConfig,
+    ignore_patterns: *std.ArrayList([]const u8),
+) void {
+    const cfg_content = deps.fs.readFileAlloc(allocator, cfg_path) catch return;
+    defer allocator.free(cfg_content);
+
+    const parsed_cfg = std.json.parseFromSlice(std.json.Value, allocator, cfg_content, .{}) catch return;
+    defer parsed_cfg.deinit();
+
+    if (parsed_cfg.value != .object) return;
+    const obj = parsed_cfg.value.object;
+
+    if (obj.get("max_nesting")) |v| {
+        if (v == .integer and v.integer >= 0) {
+            noise_cfg.max_nesting = @intCast(v.integer);
+        }
+    }
+    if (obj.get("max_closure_len")) |v| {
+        if (v == .integer and v.integer >= 0) {
+            noise_cfg.max_closure_len = @intCast(v.integer);
+        }
+    }
+    if (obj.get("ignore_patterns")) |v| {
+        if (v == .array) {
+            for (v.array.items) |item| {
+                if (item == .string) {
+                    ignore_patterns.append(allocator, allocator.dupe(u8, item.string) catch continue) catch continue;
+                }
+            }
+        }
+    }
 }
 
 fn matchGlob(pattern: []const u8, text: []const u8) bool {
