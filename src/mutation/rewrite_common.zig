@@ -336,36 +336,8 @@ fn collectDeMorganTerms(
         idx = skipWhitespace(trimmed, idx);
         const term_start = idx;
 
-        var paren_depth: i32 = 0;
-        while (idx < trimmed.len) {
-            if (skipTriviaOrLiteral(trimmed, idx)) |next_idx| {
-                idx = next_idx;
-                continue;
-            }
-            const ch = trimmed[idx];
-            if (ch == '(') {
-                paren_depth += 1;
-            } else if (ch == ')') {
-                paren_depth -= 1;
-            } else if (paren_depth == 0) {
-                if (ch == '|' and idx + 1 < trimmed.len and trimmed[idx + 1] == '|') {
-                    if (op_is_or.* == null) {
-                        op_is_or.* = true;
-                    } else if (op_is_or.*.? != true) {
-                        return false;
-                    }
-                    break;
-                } else if (ch == '&' and idx + 1 < trimmed.len and trimmed[idx + 1] == '&') {
-                    if (op_is_or.* == null) {
-                        op_is_or.* = false;
-                    } else if (op_is_or.*.? != false) {
-                        return false;
-                    }
-                    break;
-                }
-            }
-            idx += 1;
-        }
+        const term_end = findTermEnd(trimmed, idx, op_is_or) orelse return false;
+        idx = term_end;
 
         const raw_term = trimmed[term_start..idx];
         const term = std.mem.trim(u8, raw_term, " \t\r\n");
@@ -407,4 +379,40 @@ pub fn isOperatorChar(ch: u8) bool {
         ch == '?' or ch == ':' or ch == '+' or ch == '-' or
         ch == '*' or ch == '/' or ch == '%' or ch == '<' or
         ch == '>' or ch == '~' or ch == '=';
+}
+
+fn updateDeMorganOperator(op_is_or: *?bool, is_or: bool) bool {
+    if (op_is_or.* == null) {
+        op_is_or.* = is_or;
+        return true;
+    }
+    return op_is_or.*.? == is_or;
+}
+
+fn findTermEnd(trimmed: []const u8, start_idx: usize, op_is_or: *?bool) ?usize {
+    var idx = start_idx;
+    var paren_depth: i32 = 0;
+    while (idx < trimmed.len) {
+        if (skipTriviaOrLiteral(trimmed, idx)) |next_idx| {
+            idx = next_idx;
+            continue;
+        }
+        const ch = trimmed[idx];
+        if (ch == '(') {
+            paren_depth += 1;
+        } else if (ch == ')') {
+            paren_depth -= 1;
+        } else if (paren_depth == 0) {
+            if (ch == '|' and idx + 1 < trimmed.len and trimmed[idx + 1] == '|') {
+                if (!updateDeMorganOperator(op_is_or, true)) return null;
+                return idx;
+            }
+            if (ch == '&' and idx + 1 < trimmed.len and trimmed[idx + 1] == '&') {
+                if (!updateDeMorganOperator(op_is_or, false)) return null;
+                return idx;
+            }
+        }
+        idx += 1;
+    }
+    return trimmed.len;
 }
