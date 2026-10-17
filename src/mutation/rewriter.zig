@@ -6,6 +6,19 @@ const de_morgan = @import("rewrite_de_morgan.zig");
 
 pub const RewriteResult = common.RewriteResult;
 
+const RewritePassFn = *const fn (std.mem.Allocator, []const u8) anyerror!common.RewriteResult;
+
+fn runRewritePass(allocator: std.mem.Allocator, current: *[]u8, total_changes: *usize, pass_fn: RewritePassFn) !bool {
+    const res = try pass_fn(allocator, current.*);
+    if (res.changes_count > 0) {
+        allocator.free(current.*);
+        current.* = res.output;
+        total_changes.* += res.changes_count;
+        return true;
+    }
+    allocator.free(res.output);
+    return false;
+}
 pub fn simplify(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     const res = try rewrite(allocator, source);
     return res.output;
@@ -26,48 +39,14 @@ pub fn rewrite(allocator: std.mem.Allocator, source: []const u8) !RewriteResult 
         var cur_hash: [32]u8 = undefined;
         sha.final(&cur_hash);
 
-        var already_seen = false;
-        for (seen_hashes[0..seen_count]) |h| {
-            if (std.mem.eql(u8, &h, &cur_hash)) {
-                already_seen = true;
-                break;
-            }
-        }
-        if (already_seen) break;
+        if (hasSeenHash(seen_hashes[0..seen_count], &cur_hash)) break;
         seen_hashes[seen_count] = cur_hash;
         seen_count += 1;
 
         var changed_in_pass = false;
-
-        const ternary_res = try ternaries.rewriteTernaries(allocator, current);
-        if (ternary_res.changes_count > 0) {
-            allocator.free(current);
-            current = ternary_res.output;
-            total_changes += ternary_res.changes_count;
-            changed_in_pass = true;
-        } else {
-            allocator.free(ternary_res.output);
-        }
-
-        const de_morgan_res = try de_morgan.rewriteDeMorgan(allocator, current);
-        if (de_morgan_res.changes_count > 0) {
-            allocator.free(current);
-            current = de_morgan_res.output;
-            total_changes += de_morgan_res.changes_count;
-            changed_in_pass = true;
-        } else {
-            allocator.free(de_morgan_res.output);
-        }
-
-        const double_neg_res = try double_neg.rewriteDoubleNegation(allocator, current);
-        if (double_neg_res.changes_count > 0) {
-            allocator.free(current);
-            current = double_neg_res.output;
-            total_changes += double_neg_res.changes_count;
-            changed_in_pass = true;
-        } else {
-            allocator.free(double_neg_res.output);
-        }
+        if (try runRewritePass(allocator, &current, &total_changes, ternaries.rewriteTernaries)) changed_in_pass = true;
+        if (try runRewritePass(allocator, &current, &total_changes, de_morgan.rewriteDeMorgan)) changed_in_pass = true;
+        if (try runRewritePass(allocator, &current, &total_changes, double_neg.rewriteDoubleNegation)) changed_in_pass = true;
 
         if (!changed_in_pass) break;
     }
@@ -230,4 +209,11 @@ test "rewriteTernaries does not emit Boolean in C# or if already boolean" {
     const res_cs = try simplify(allocator, cs_input);
     defer allocator.free(res_cs);
     try std.testing.expectEqualStrings("public class C { bool Check(User user) { return user.enabled; } }", res_cs);
+}
+
+fn hasSeenHash(seen: []const [32]u8, hash: *const [32]u8) bool {
+    for (seen) |h| {
+        if (std.mem.eql(u8, &h, hash)) return true;
+    }
+    return false;
 }
