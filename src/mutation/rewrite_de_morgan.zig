@@ -29,27 +29,10 @@ pub fn rewriteDeMorgan(allocator: std.mem.Allocator, source: []const u8) !Rewrit
             continue;
         }
 
-        if (source[i] == '!' and i + 1 < source.len and source[i + 1] == '(') {
-            const close_idx = findMatchingParen(source, i + 1);
-            if (close_idx) |c_idx| {
-                const inner = source[i + 2 .. c_idx];
-                if (try parseDeMorganInner(allocator, inner)) |dm| {
-                    defer allocator.free(dm);
-
-                    const should_wrap = shouldWrapDeMorgan(source, i, c_idx + 1);
-                    if (should_wrap) {
-                        try out.append(allocator, '(');
-                        try out.appendSlice(allocator, dm);
-                        try out.append(allocator, ')');
-                    } else {
-                        try out.appendSlice(allocator, dm);
-                    }
-
-                    i = c_idx + 1;
-                    changes += 1;
-                    continue;
-                }
-            }
+        if (try applyDeMorganAt(source, i, &out, allocator)) |next_i| {
+            i = next_i;
+            changes += 1;
+            continue;
         }
 
         try out.append(allocator, source[i]);
@@ -60,4 +43,23 @@ pub fn rewriteDeMorgan(allocator: std.mem.Allocator, source: []const u8) !Rewrit
         .output = try out.toOwnedSlice(allocator),
         .changes_count = changes,
     };
+}
+
+fn applyDeMorganAt(source: []const u8, i: usize, out: *std.ArrayList(u8), allocator: std.mem.Allocator) !?usize {
+    if (!(source[i] == '!' and i + 1 < source.len and source[i + 1] == '(')) return null;
+    const close_idx = findMatchingParen(source, i + 1) orelse return null;
+    const inner = source[i + 2 .. close_idx];
+    const dm = (try parseDeMorganInner(allocator, inner)) orelse return null;
+    defer allocator.free(dm);
+
+    const should_wrap = shouldWrapDeMorgan(source, i, close_idx + 1);
+    if (should_wrap) {
+        try out.append(allocator, '(');
+        try out.appendSlice(allocator, dm);
+        try out.append(allocator, ')');
+    } else {
+        try out.appendSlice(allocator, dm);
+    }
+
+    return close_idx + 1;
 }
