@@ -1,0 +1,27 @@
+{
+  "name": "zero-noise",
+  "version": "0.1.0",
+  "description": "Structural code quality and AST analysis engine for Go, Rust, TypeScript, Python, C#, and Zig.",
+  "bin": {
+    "zero-noise": "bin/zero-noise"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "skills/",
+    "commands/",
+    "agents/",
+    "manifest.json",
+    ".mcp.json",
+    ".claude-plugin/",
+    "AGENTS.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xdvi/zero-noise.git"
+  }
+}
