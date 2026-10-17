@@ -222,6 +222,11 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
         return ToolResult{ .text = text, .is_error = true };
     }
 
+    if (result.status == .dry_run) {
+        const text = try std.fmt.allocPrint(allocator, "Safe Refactor ({s}): dry run only, no changes applied (hash: {s}).\n{s}", .{ filepath, expected_hash orelse "unlocked", result.diff });
+        return ToolResult{ .text = text, .is_error = false };
+    }
+
     const text = try std.fmt.allocPrint(allocator, "Safe Refactor: {s} verified and applied successfully (hash: {s}).\n{s}", .{ filepath, expected_hash orelse "unlocked", result.diff });
     return ToolResult{ .text = text, .is_error = false };
 }
