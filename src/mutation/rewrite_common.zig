@@ -25,9 +25,23 @@ const ident_char_table = blk: {
 
 pub fn skipWhitespace(src: []const u8, start: usize) usize {
     var i = start;
-    while (i < src.len and (src[i] == ' ' or src[i] == '\t' or src[i] == '\r' or src[i] == '\n')) : (i += 1) {}
+    while (i < src.len and isWhitespace(src[i])) : (i += 1) {}
     return i;
 }
+
+pub fn isWhitespace(ch: u8) bool {
+    return whitespace_table[ch];
+}
+
+const whitespace_table = blk: {
+    var t: [256]bool = undefined;
+    var i: usize = 0;
+    while (i < 256) : (i += 1) {
+        const c: u8 = @intCast(i);
+        t[i] = c == ' ' or c == '\t' or c == '\r' or c == '\n';
+    }
+    break :blk t;
+};
 
 pub fn matchKeyword(src: []const u8, idx: usize, kw: []const u8) bool {
     if (idx + kw.len > src.len) return false;
