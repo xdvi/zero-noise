@@ -147,93 +147,18 @@ pub fn findConditionStart(src: []const u8, q_idx: usize) usize {
         const ch = src[idx];
 
         if (ch == '"' or ch == '\'' or ch == '`') {
-            const quote = ch;
-            while (idx > 0) {
-                idx -= 1;
-                if (src[idx] == quote) {
-                    var slash_count: usize = 0;
-                    var s = idx;
-                    while (s > 0 and src[s - 1] == '\\') {
-                        slash_count += 1;
-                        s -= 1;
-                    }
-                    if (slash_count % 2 == 0) {
-                        break;
-                    }
-                }
-            }
+            idx = skipQuotedBackwards(src, idx, ch);
             continue;
         }
 
-        if (ch == ')') {
-            paren_depth += 1;
-            continue;
-        } else if (ch == '(') {
-            if (paren_depth > 0) {
-                paren_depth -= 1;
-                continue;
-            } else {
-                return idx + 1;
-            }
-        }
-
-        if (ch == ']') {
-            bracket_depth += 1;
-            continue;
-        } else if (ch == '[') {
-            if (bracket_depth > 0) {
-                bracket_depth -= 1;
-                continue;
-            } else {
-                return idx + 1;
-            }
-        }
-
-        if (ch == '}') {
-            brace_depth += 1;
-            continue;
-        } else if (ch == '{') {
-            if (brace_depth > 0) {
-                brace_depth -= 1;
-                continue;
-            } else {
-                return idx + 1;
-            }
+        switch (handleBackwardBracket(ch, &paren_depth, &bracket_depth, &brace_depth)) {
+            .continue_loop => continue,
+            .return_boundary => return idx + 1,
+            .not_bracket => {},
         }
 
         if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0) {
-            if (ch == ';' or ch == ',') return idx + 1;
-
-            if (ch == '>' and idx > 0 and src[idx - 1] == '=') {
-                return idx + 1;
-            }
-            if (ch == '=' and idx + 1 < src.len and src[idx + 1] == '>') {
-                return idx + 2;
-            }
-
-            if (ch == '=') {
-                const prev = if (idx > 0) src[idx - 1] else 0;
-                const next = if (idx + 1 < src.len) src[idx + 1] else 0;
-                if (prev != '=' and prev != '!' and prev != '<' and prev != '>' and next != '=' and next != '>') {
-                    return idx + 1;
-                }
-            }
-
-            if (idx >= 6 and std.mem.eql(u8, src[idx - 6 .. idx], "return") and
-                (idx == 6 or !isIdentChar(src[idx - 7])))
-            {
-                return idx;
-            }
-
-            if (idx >= 5 and std.mem.eql(u8, src[idx - 5 .. idx], "yield") and
-                (idx == 5 or !isIdentChar(src[idx - 6])))
-            {
-                return idx;
-            }
-
-            if (ch == '\n') {
-                return idx + 1;
-            }
+            if (boundaryReturn(src, idx, ch)) |ret| return ret;
         }
     }
 
@@ -400,19 +325,121 @@ fn findTermEnd(trimmed: []const u8, start_idx: usize, op_is_or: *?bool) ?usize {
         const ch = trimmed[idx];
         if (ch == '(') {
             paren_depth += 1;
-        } else if (ch == ')') {
+            idx += 1;
+            continue;
+        }
+        if (ch == ')') {
             paren_depth -= 1;
-        } else if (paren_depth == 0) {
-            if (ch == '|' and idx + 1 < trimmed.len and trimmed[idx + 1] == '|') {
-                if (!updateDeMorganOperator(op_is_or, true)) return null;
-                return idx;
-            }
-            if (ch == '&' and idx + 1 < trimmed.len and trimmed[idx + 1] == '&') {
-                if (!updateDeMorganOperator(op_is_or, false)) return null;
-                return idx;
-            }
+            idx += 1;
+            continue;
+        }
+        if (paren_depth == 0 and isDeMorganOperator(trimmed, idx)) {
+            const is_or = (trimmed[idx] == '|');
+            if (!updateDeMorganOperator(op_is_or, is_or)) return null;
+            return idx;
         }
         idx += 1;
     }
     return trimmed.len;
+}
+
+fn isDeMorganOperator(trimmed: []const u8, idx: usize) bool {
+    if (idx + 1 >= trimmed.len) return false;
+    if (trimmed[idx] == '|' and trimmed[idx + 1] == '|') return true;
+    if (trimmed[idx] == '&' and trimmed[idx + 1] == '&') return true;
+    return false;
+}
+
+fn boundaryReturn(src: []const u8, idx: usize, ch: u8) ?usize {
+    if (ch == ';' or ch == ',') return idx + 1;
+
+    if (ch == '>' and idx > 0 and src[idx - 1] == '=') {
+        return idx + 1;
+    }
+    if (ch == '=' and idx + 1 < src.len and src[idx + 1] == '>') {
+        return idx + 2;
+    }
+
+    if (ch == '=') {
+        const prev = if (idx > 0) src[idx - 1] else 0;
+        const next = if (idx + 1 < src.len) src[idx + 1] else 0;
+        if (prev != '=' and prev != '!' and prev != '<' and prev != '>' and next != '=' and next != '>') {
+            return idx + 1;
+        }
+    }
+
+    if (idx >= 6 and std.mem.eql(u8, src[idx - 6 .. idx], "return") and
+        (idx == 6 or !isIdentChar(src[idx - 7])))
+    {
+        return idx;
+    }
+
+    if (idx >= 5 and std.mem.eql(u8, src[idx - 5 .. idx], "yield") and
+        (idx == 5 or !isIdentChar(src[idx - 6])))
+    {
+        return idx;
+    }
+
+    if (ch == '\n') {
+        return idx + 1;
+    }
+
+    return null;
+}
+
+fn skipQuotedBackwards(src: []const u8, idx: usize, quote: u8) usize {
+    var i = idx;
+    while (i > 0) {
+        i -= 1;
+        if (src[i] == quote) {
+            var slash_count: usize = 0;
+            var s = i;
+            while (s > 0 and src[s - 1] == '\\') {
+                slash_count += 1;
+                s -= 1;
+            }
+            if (slash_count % 2 == 0) {
+                return i;
+            }
+        }
+    }
+    return 0;
+}
+const BackwardBracketAction = enum { continue_loop, return_boundary, not_bracket };
+
+fn handleBackwardBracket(ch: u8, paren_depth: *i32, bracket_depth: *i32, brace_depth: *i32) BackwardBracketAction {
+    if (ch == ')') {
+        paren_depth.* += 1;
+        return .continue_loop;
+    }
+    if (ch == '(') {
+        if (paren_depth.* > 0) {
+            paren_depth.* -= 1;
+            return .continue_loop;
+        }
+        return .return_boundary;
+    }
+    if (ch == ']') {
+        bracket_depth.* += 1;
+        return .continue_loop;
+    }
+    if (ch == '[') {
+        if (bracket_depth.* > 0) {
+            bracket_depth.* -= 1;
+            return .continue_loop;
+        }
+        return .return_boundary;
+    }
+    if (ch == '}') {
+        brace_depth.* += 1;
+        return .continue_loop;
+    }
+    if (ch == '{') {
+        if (brace_depth.* > 0) {
+            brace_depth.* -= 1;
+            return .continue_loop;
+        }
+        return .return_boundary;
+    }
+    return .not_bracket;
 }
