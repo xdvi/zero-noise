@@ -303,22 +303,6 @@ pub fn isFunctionNode(node: bindings.TSNode, lang: Language) bool {
     return lang.isFunctionNode(node);
 }
 
-pub fn isFunctionType(node_type: []const u8, lang: Language) bool {
-    return lang.isFunction(node_type);
-}
-
-pub fn isControlType(node_type: []const u8, lang: Language) bool {
-    return lang.isControl(node_type);
-}
-
-pub fn isClosureType(node_type: []const u8, lang: Language) bool {
-    return lang.isClosure(node_type);
-}
-
-pub fn isTernaryType(node_type: []const u8, lang: Language) bool {
-    return lang.isTernary(node_type);
-}
-
 pub fn isElseIfNode(node: bindings.TSNode, lang: Language) bool {
     return lang.isElseIfNode(node);
 }
