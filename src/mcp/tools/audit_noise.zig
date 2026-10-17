@@ -76,33 +76,7 @@ pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
     }
 
     for (files_list.items) |file_path| {
-        var ignored = false;
-        for (ignore_patterns.items) |pat| {
-            if (matchGlob(pat, file_path)) {
-                ignored = true;
-                break;
-            }
-        }
-        if (ignored) continue;
-
-        const lang = grammars.Language.fromPath(file_path);
-        if (lang == .unknown) continue;
-
-        const content = deps.fs.readFileAlloc(allocator, file_path) catch continue;
-        defer allocator.free(content);
-
-        const findings = deps.auditNoiseWithOptions(allocator, content, lang, noise_cfg) catch continue;
-        defer noise.deinitFindings(allocator, findings);
-
-        for (findings) |f| {
-            try all_findings.append(allocator, .{
-                .file = try allocator.dupe(u8, file_path),
-                .rule = f.rule,
-                .line = f.line,
-                .column = f.column,
-                .message = try allocator.dupe(u8, f.message),
-            });
-        }
+        try auditOneFile(allocator, deps, file_path, noise_cfg, &ignore_patterns, &all_findings);
     }
 
     return fmt.auditNoise(allocator, path, all_findings, format);
@@ -111,6 +85,38 @@ pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
 pub fn executeAuditNoise(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
     const default = deps_mod.defaultDeps();
     return executeAuditNoiseWithDeps(allocator, args, &default);
+}
+
+fn auditOneFile(
+    allocator: std.mem.Allocator,
+    deps: *const deps_mod.Deps,
+    file_path: []const u8,
+    noise_cfg: noise.NoiseConfig,
+    ignore_patterns: *std.ArrayList([]const u8),
+    all_findings: *std.ArrayList(FindingItem),
+) !void {
+    for (ignore_patterns.items) |pat| {
+        if (matchGlob(pat, file_path)) return;
+    }
+
+    const lang = grammars.Language.fromPath(file_path);
+    if (lang == .unknown) return;
+
+    const content = deps.fs.readFileAlloc(allocator, file_path) catch return;
+    defer allocator.free(content);
+
+    const findings = deps.auditNoiseWithOptions(allocator, content, lang, noise_cfg) catch return;
+    defer noise.deinitFindings(allocator, findings);
+
+    for (findings) |f| {
+        try all_findings.append(allocator, .{
+            .file = try allocator.dupe(u8, file_path),
+            .rule = f.rule,
+            .line = f.line,
+            .column = f.column,
+            .message = try allocator.dupe(u8, f.message),
+        });
+    }
 }
 
 fn loadNoiseConfig(
@@ -129,24 +135,25 @@ fn loadNoiseConfig(
     if (parsed_cfg.value != .object) return;
     const obj = parsed_cfg.value.object;
 
-    if (obj.get("max_nesting")) |v| {
-        if (v == .integer and v.integer >= 0) {
-            noise_cfg.max_nesting = @intCast(v.integer);
-        }
-    }
-    if (obj.get("max_closure_len")) |v| {
-        if (v == .integer and v.integer >= 0) {
-            noise_cfg.max_closure_len = @intCast(v.integer);
-        }
-    }
-    if (obj.get("ignore_patterns")) |v| {
-        if (v == .array) {
-            for (v.array.items) |item| {
-                if (item == .string) {
-                    ignore_patterns.append(allocator, allocator.dupe(u8, item.string) catch continue) catch continue;
-                }
-            }
-        }
+    applyNoiseScalar(obj, "max_nesting", &noise_cfg.max_nesting);
+    applyNoiseScalar(obj, "max_closure_len", &noise_cfg.max_closure_len);
+    appendIgnorePatterns(allocator, obj, ignore_patterns);
+}
+
+fn applyNoiseScalar(obj: std.json.ObjectMap, key: []const u8, target: *u32) void {
+    const v = obj.get(key) orelse return;
+    if (v != .integer) return;
+    if (v.integer < 0) return;
+    target.* = @intCast(v.integer);
+}
+
+fn appendIgnorePatterns(allocator: std.mem.Allocator, obj: std.json.ObjectMap, ignore_patterns: *std.ArrayList([]const u8)) void {
+    const v = obj.get("ignore_patterns") orelse return;
+    if (v != .array) return;
+    for (v.array.items) |item| {
+        if (item != .string) continue;
+        const duped = allocator.dupe(u8, item.string) catch continue;
+        ignore_patterns.append(allocator, duped) catch allocator.free(duped);
     }
 }
 
