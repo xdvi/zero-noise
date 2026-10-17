@@ -144,17 +144,7 @@ pub fn readFileAlloc(allocator: std.mem.Allocator, filepath: []const u8) ![]u8 {
 
     var read_bytes: usize = 0;
     if (size > 0) {
-        while (read_bytes < size) {
-            const n = std.c.fread(buf.ptr + read_bytes, 1, size - read_bytes, f);
-            if (n == 0) {
-                if (ferror(f) != 0) return error.FileReadError;
-                break;
-            }
-            read_bytes += n;
-        }
-        if (read_bytes != size) {
-            return error.FileReadError;
-        }
+        read_bytes = readFileBytes(f, buf, size) catch return error.FileReadError;
     }
 
     return buf[0..read_bytes];
@@ -171,4 +161,18 @@ pub fn writeFile(filepath_z: [*:0]const u8, content: []const u8) !void {
         written_total += n;
     }
     if (fflush(f) != 0) return error.FileWriteError;
+}
+
+fn readFileBytes(f: *std.c.FILE, buf: []u8, size: usize) !usize {
+    var read_bytes: usize = 0;
+    while (read_bytes < size) {
+        const n = std.c.fread(buf.ptr + read_bytes, 1, size - read_bytes, f);
+        if (n == 0) {
+            if (ferror(f) != 0) return error.FileReadError;
+            break;
+        }
+        read_bytes += n;
+    }
+    if (read_bytes != size) return error.FileReadError;
+    return read_bytes;
 }
