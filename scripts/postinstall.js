@@ -84,6 +84,13 @@ async function main() {
     }
     fs.chmodSync(binaryPath, 0o755);
     console.log('Installed zero-noise to ' + binaryPath);
+
+    // Make available on PATH for MCP servers that invoke `zero-noise`.
+    const home = os.homedir();
+    const localBin = path.join(home, '.local', 'bin');
+    try { fs.mkdirSync(localBin, { recursive: true }); } catch {}
+    const targetBin = path.join(localBin, t.binary);
+    try { fs.copyFileSync(binaryPath, targetBin); fs.chmodSync(targetBin, 0o755); console.log('Linked to ' + targetBin); } catch (e) { console.warn('Could not link to PATH: ' + e.message); }
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
