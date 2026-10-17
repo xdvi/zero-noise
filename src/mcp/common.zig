@@ -13,19 +13,12 @@ pub fn getStringArg(args: ?std.json.Value, key: []const u8) ?[]const u8 {
 }
 
 pub fn getIntArg(args: ?std.json.Value, key: []const u8, default_val: i64) i64 {
-    if (args) |v| {
-        if (v == .object) {
-            if (v.object.get(key)) |val| {
-                if (val == .integer) {
-                    if (val.integer >= 0 and val.integer <= std.math.maxInt(u32)) {
-                        return val.integer;
-                    }
-                    return default_val;
-                }
-            }
-        }
-    }
-    return default_val;
+    const v = args orelse return default_val;
+    if (v != .object) return default_val;
+    const val = v.object.get(key) orelse return default_val;
+    if (val != .integer) return default_val;
+    if (val.integer < 0 or val.integer > std.math.maxInt(u32)) return default_val;
+    return val.integer;
 }
 
 pub fn getU32Arg(args: ?std.json.Value, key: []const u8, default_val: u32) u32 {

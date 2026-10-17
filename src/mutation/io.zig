@@ -59,36 +59,19 @@ pub fn isDirectory(filepath_z: [*:0]const u8, fd: ?c_int) bool {
         var stx: std.os.linux.Statx = undefined;
         if (fd) |f_desc| {
             if (f_desc >= 0) {
-                const rc = std.os.linux.statx(
-                    f_desc,
-                    "",
-                    0x1000,
-                    .{ .MODE = true },
-                    &stx,
-                );
-                if (rc == 0) {
-                    return std.os.linux.S.ISDIR(stx.mode);
-                }
+                const rc = std.os.linux.statx(f_desc, "", 0x1000, .{ .MODE = true }, &stx);
+                if (rc == 0) return std.os.linux.S.ISDIR(stx.mode);
             }
         }
-        const rc = std.os.linux.statx(
-            std.posix.AT.FDCWD,
-            filepath_z,
-            0,
-            .{ .MODE = true },
-            &stx,
-        );
-        if (rc == 0) {
-            return std.os.linux.S.ISDIR(stx.mode);
-        }
-        return false;
-    } else {
-        var st: std.c.Stat = undefined;
-        if (std.c.stat(filepath_z, &st) == 0) {
-            return (st.mode & 0o170000) == 0o040000;
-        }
+        const rc = std.os.linux.statx(std.posix.AT.FDCWD, filepath_z, 0, .{ .MODE = true }, &stx);
+        if (rc == 0) return std.os.linux.S.ISDIR(stx.mode);
         return false;
     }
+    var st: std.c.Stat = undefined;
+    if (std.c.stat(filepath_z, &st) == 0) {
+        return (st.mode & 0o170000) == 0o040000;
+    }
+    return false;
 }
 
 pub fn atomicRename(src_path_z: [*:0]const u8, dst_path_z: [*:0]const u8) bool {
