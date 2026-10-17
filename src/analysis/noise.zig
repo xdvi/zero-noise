@@ -171,66 +171,13 @@ fn walkNoise(
         const is_elif = lang.isElseIfNode(node);
         if (!is_elif) {
             next_depth = depth + 1;
-            if (next_depth > config.max_nesting) {
-                const pt = node.startPoint();
-                try findings.append(allocator, .{
-                    .rule = .excessive_nesting,
-                    .line = pt.row + 1,
-                    .column = pt.column + 1,
-                    .message = "nesting > 2 levels (guard clause / early return opportunity)",
-                    .snippet = grammars.getLineSnippet(source, pt.row),
-                });
-            }
+            try checkExcessiveNesting(allocator, node, next_depth, config, source, findings);
         }
     }
 
-    // Check inline closures > max_closure_len inside call arguments
-    if (lang.isClosure(t)) {
-        const inside = isInsideCallArguments(node);
-        const start = node.startByte();
-        const end = node.endByte();
-        if (inside and end > start and (end - start) > config.max_closure_len) {
-            const pt = node.startPoint();
-            try findings.append(allocator, .{
-                .rule = .long_closure,
-                .line = pt.row + 1,
-                .column = pt.column + 1,
-                .message = "inline closure exceeds 80 characters",
-                .snippet = grammars.getLineSnippet(source, pt.row),
-            });
-        }
-    }
-
-    // Check redundant ternaries (e.g., cond ? true : false)
-    if (lang.isTernary(t)) {
-        if (isRedundantTernary(node, source, lang)) {
-            const pt = node.startPoint();
-            try findings.append(allocator, .{
-                .rule = .redundant_ternary,
-                .line = pt.row + 1,
-                .column = pt.column + 1,
-                .message = "redundant ternary boolean expression",
-                .snippet = grammars.getLineSnippet(source, pt.row),
-            });
-        }
-    }
-
-    // Check raw compound boolean conditions in if/while (3+ conditions chained with &&/||)
-    if (lang.isIfOrWhile(t)) {
-        const cond = node.childByFieldName("condition");
-        if (!cond.isNull()) {
-            if (countLogicalOperators(cond, source, lang) >= 2) {
-                const pt = node.startPoint();
-                try findings.append(allocator, .{
-                    .rule = .raw_boolean,
-                    .line = pt.row + 1,
-                    .column = pt.column + 1,
-                    .message = "raw compound boolean condition (extract to domain predicate)",
-                    .snippet = grammars.getLineSnippet(source, pt.row),
-                });
-            }
-        }
-    }
+    try checkLongClosure(allocator, node, lang, config, source, findings);
+    try checkRedundantTernaryFinding(allocator, node, lang, source, findings);
+    try checkRawBoolean(allocator, node, lang, source, findings);
 
     var i: u32 = 0;
     const count = node.childCount();
@@ -1238,4 +1185,86 @@ test "auditNoise - closures reset nesting depth internally" {
         if (f.rule == .excessive_nesting) excessive_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 0), excessive_count);
+}
+
+fn checkExcessiveNesting(
+    allocator: std.mem.Allocator,
+    node: bindings.TSNode,
+    next_depth: u32,
+    config: NoiseConfig,
+    source: []const u8,
+    findings: *std.ArrayList(NoiseFinding),
+) !void {
+    if (next_depth <= config.max_nesting) return;
+    const pt = node.startPoint();
+    try findings.append(allocator, .{
+        .rule = .excessive_nesting,
+        .line = pt.row + 1,
+        .column = pt.column + 1,
+        .message = "nesting > 2 levels (guard clause / early return opportunity)",
+        .snippet = grammars.getLineSnippet(source, pt.row),
+    });
+}
+
+fn checkLongClosure(
+    allocator: std.mem.Allocator,
+    node: bindings.TSNode,
+    lang: grammars.Language,
+    config: NoiseConfig,
+    source: []const u8,
+    findings: *std.ArrayList(NoiseFinding),
+) !void {
+    if (!lang.isClosure(node.getType())) return;
+    const inside = isInsideCallArguments(node);
+    const start = node.startByte();
+    const end = node.endByte();
+    if (!(inside and end > start and (end - start) > config.max_closure_len)) return;
+    const pt = node.startPoint();
+    try findings.append(allocator, .{
+        .rule = .long_closure,
+        .line = pt.row + 1,
+        .column = pt.column + 1,
+        .message = "inline closure exceeds 80 characters",
+        .snippet = grammars.getLineSnippet(source, pt.row),
+    });
+}
+
+fn checkRedundantTernaryFinding(
+    allocator: std.mem.Allocator,
+    node: bindings.TSNode,
+    lang: grammars.Language,
+    source: []const u8,
+    findings: *std.ArrayList(NoiseFinding),
+) !void {
+    if (!lang.isTernary(node.getType())) return;
+    if (!isRedundantTernary(node, source, lang)) return;
+    const pt = node.startPoint();
+    try findings.append(allocator, .{
+        .rule = .redundant_ternary,
+        .line = pt.row + 1,
+        .column = pt.column + 1,
+        .message = "redundant ternary boolean expression",
+        .snippet = grammars.getLineSnippet(source, pt.row),
+    });
+}
+
+fn checkRawBoolean(
+    allocator: std.mem.Allocator,
+    node: bindings.TSNode,
+    lang: grammars.Language,
+    source: []const u8,
+    findings: *std.ArrayList(NoiseFinding),
+) !void {
+    if (!lang.isIfOrWhile(node.getType())) return;
+    const cond = node.childByFieldName("condition");
+    if (cond.isNull()) return;
+    if (countLogicalOperators(cond, source, lang) < 2) return;
+    const pt = node.startPoint();
+    try findings.append(allocator, .{
+        .rule = .raw_boolean,
+        .line = pt.row + 1,
+        .column = pt.column + 1,
+        .message = "raw compound boolean condition (extract to domain predicate)",
+        .snippet = grammars.getLineSnippet(source, pt.row),
+    });
 }
