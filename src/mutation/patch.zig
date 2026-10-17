@@ -20,18 +20,7 @@ pub fn applyPatch(allocator: std.mem.Allocator, original: []const u8, patch_cont
 
     while (patch_it.next()) |pline| {
         if (std.mem.startsWith(u8, pline, "@@ -")) {
-            const start_idx = std.mem.indexOf(u8, pline, "-") orelse continue;
-            const after_minus = pline[start_idx + 1 ..];
-            var end_idx: usize = 0;
-            while (end_idx < after_minus.len and after_minus[end_idx] != ',' and after_minus[end_idx] != ' ') : (end_idx += 1) {}
-            if (end_idx == 0) continue;
-            const old_start = std.fmt.parseInt(usize, after_minus[0..end_idx], 10) catch continue;
-
-            const target_line = if (old_start > 0) old_start - 1 else 0;
-            if (target_line < orig_idx) return error.PatchContextMismatch;
-            while (orig_idx < target_line and orig_idx < orig_lines.items.len) : (orig_idx += 1) {
-                try result_lines.append(allocator, orig_lines.items[orig_idx]);
-            }
+            try applyHunkHeader(pline, &orig_idx, &result_lines, orig_lines.items, allocator);
             continue;
         }
 
@@ -39,18 +28,7 @@ pub fn applyPatch(allocator: std.mem.Allocator, original: []const u8, patch_cont
             continue;
         }
 
-        if (pline.len > 0 and pline[0] == '+') {
-            try result_lines.append(allocator, pline[1..]);
-        } else if (pline.len > 0 and pline[0] == '-') {
-            if (orig_idx >= orig_lines.items.len) return error.PatchContextMismatch;
-            if (!std.mem.eql(u8, orig_lines.items[orig_idx], pline[1..])) return error.PatchContextMismatch;
-            orig_idx += 1;
-        } else if (pline.len > 0 and pline[0] == ' ') {
-            if (orig_idx >= orig_lines.items.len) return error.PatchContextMismatch;
-            if (!std.mem.eql(u8, orig_lines.items[orig_idx], pline[1..])) return error.PatchContextMismatch;
-            try result_lines.append(allocator, orig_lines.items[orig_idx]);
-            orig_idx += 1;
-        }
+        try applyPatchLine(pline, &orig_idx, &result_lines, orig_lines.items, allocator);
     }
 
     while (orig_idx < orig_lines.items.len) : (orig_idx += 1) {
@@ -144,4 +122,52 @@ pub fn generateDiff(
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+
+fn applyHunkHeader(
+    pline: []const u8,
+    orig_idx: *usize,
+    result_lines: *std.ArrayList([]const u8),
+    orig_lines: []const []const u8,
+    allocator: std.mem.Allocator,
+) !void {
+    const start_idx = std.mem.indexOf(u8, pline, "-") orelse return;
+    const after_minus = pline[start_idx + 1 ..];
+    var end_idx: usize = 0;
+    while (end_idx < after_minus.len and after_minus[end_idx] != ',' and after_minus[end_idx] != ' ') : (end_idx += 1) {}
+    if (end_idx == 0) return;
+    const old_start = std.fmt.parseInt(usize, after_minus[0..end_idx], 10) catch return;
+
+    const target_line = if (old_start > 0) old_start - 1 else 0;
+    if (target_line < orig_idx.*) return error.PatchContextMismatch;
+    while (orig_idx.* < target_line and orig_idx.* < orig_lines.len) : (orig_idx.* += 1) {
+        try result_lines.append(allocator, orig_lines[orig_idx.*]);
+    }
+}
+
+fn applyPatchLine(
+    pline: []const u8,
+    orig_idx: *usize,
+    result_lines: *std.ArrayList([]const u8),
+    orig_lines: []const []const u8,
+    allocator: std.mem.Allocator,
+) !void {
+    if (pline.len == 0) return;
+    if (pline[0] == '+') {
+        try result_lines.append(allocator, pline[1..]);
+        return;
+    }
+    if (pline[0] == '-') {
+        if (orig_idx.* >= orig_lines.len) return error.PatchContextMismatch;
+        if (!std.mem.eql(u8, orig_lines[orig_idx.*], pline[1..])) return error.PatchContextMismatch;
+        orig_idx.* += 1;
+        return;
+    }
+    if (pline[0] == ' ') {
+        if (orig_idx.* >= orig_lines.len) return error.PatchContextMismatch;
+        if (!std.mem.eql(u8, orig_lines[orig_idx.*], pline[1..])) return error.PatchContextMismatch;
+        try result_lines.append(allocator, orig_lines[orig_idx.*]);
+        orig_idx.* += 1;
+    }
 }
