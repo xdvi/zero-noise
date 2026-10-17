@@ -51,26 +51,26 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
     defer if (target_patch) |tp| allocator.free(tp);
 
     if (patch_file) |pf| {
-        if (!(runner.checkWorkspaceConfinement(allocator, pf) catch false)) {
+        if (runner.checkWorkspaceConfinement(allocator, pf) catch false) {
+            target_patch = deps.fs.readFileAlloc(allocator, pf) catch null;
+        } else {
             const text = try std.fmt.allocPrint(allocator, "Error: patch file is outside workspace: {s}", .{pf});
             return ToolResult{ .text = text, .is_error = true };
         }
-        target_patch = deps.fs.readFileAlloc(allocator, pf) catch null;
     }
 
     var maybe_db = deps.db.open(allocator, root) catch null;
     defer if (maybe_db) |*db| db.close();
 
-    var maybe_ledger: ?ledger_mod.RefactorLedger = if (maybe_db) |db|
-        ledger_mod.RefactorLedger.init(db, allocator)
-    else
-        null;
-
+    var maybe_ledger: ?ledger_mod.RefactorLedger = null;
     var task_id: ?[]const u8 = null;
     defer if (task_id) |tid| allocator.free(tid);
 
-    if (maybe_ledger) |*ledger| {
-        task_id = ledger.createTask(filepath, expected_hash orelse "unlocked", 0, 0) catch null;
+    if (maybe_db) |db| {
+        maybe_ledger = ledger_mod.RefactorLedger.init(db, allocator);
+        if (maybe_ledger) |*ledger| {
+            task_id = ledger.createTask(filepath, expected_hash orelse "unlocked", 0, 0) catch null;
+        }
     }
 
     const force = parsed.force;

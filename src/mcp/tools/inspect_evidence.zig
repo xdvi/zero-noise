@@ -5,6 +5,7 @@ const complexity = @import("../../analysis/complexity.zig");
 const deps_mod = @import("../deps.zig");
 const grammars = @import("../../treesitter/grammars.zig");
 const risk = @import("../risk.zig");
+const blast = @import("../../analysis/blast.zig");
 
 const ToolResult = common.ToolResult;
 
@@ -56,29 +57,65 @@ pub fn executeInspectEvidenceWithDeps(allocator: std.mem.Allocator, args: ?std.j
     }
     defer if (findings.len > 0) noise.deinitFindings(allocator, findings);
 
-    var max_complexity: u32 = 0;
-    if (lang != .unknown) {
-        const records_opt = deps.calculateComplexity(allocator, content, lang) catch null;
-        defer if (records_opt) |recs| { for (recs) |r| r.deinit(allocator); allocator.free(recs); };
-        if (records_opt) |recs| {
-            for (recs) |r| {
-                if (r.complexity > max_complexity) max_complexity = r.complexity;
-            }
-        }
-    }
-
+    const max_complexity = computeMaxComplexity(allocator, deps, content, lang);
     const blast_risk = risk.computeFileBlastRisk(allocator, path, content, root, deps);
     const total_findings = findings.len;
-    const priority_score: u32 = switch (blast_risk) {
-        .low => (max_complexity * 2 + @as(u32, @intCast(total_findings)) * 3),
-        .medium => (max_complexity * 2 + @as(u32, @intCast(total_findings)) * 3) / 2,
-        .high => (max_complexity * 2 + @as(u32, @intCast(total_findings)) * 3) / 4,
-    };
+    const priority_score = computePriorityScore(blast_risk, max_complexity, total_findings);
 
     const start_idx: usize = @min(@as(usize, page - 1) * @as(usize, page_size), total_findings);
     const end_idx: usize = @min(start_idx + @as(usize, page_size), total_findings);
     const page_findings = findings[start_idx..end_idx];
 
+    const text = try buildInspectEvidenceJson(allocator, path, actual_hash, total_findings, max_complexity, blast_risk, priority_score, page, page_size, page_findings);
+
+    if (deps.db.open(allocator, root)) |db_inst| {
+        var db = db_inst;
+        defer db.close();
+        db.recordFileCacheSlice(allocator, path, 0, @intCast(content.len), &actual_hash, @intCast(total_findings), @intCast(max_complexity)) catch {};
+    } else |_| {}
+
+    return ToolResult{ .text = text, .is_error = false };
+}
+
+pub fn executeInspectEvidence(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
+    const default = deps_mod.defaultDeps();
+    return executeInspectEvidenceWithDeps(allocator, args, &default);
+}
+
+fn computeMaxComplexity(allocator: std.mem.Allocator, deps: *const deps_mod.Deps, content: []const u8, lang: grammars.Language) u32 {
+    if (lang == .unknown) return 0;
+    const records_opt = deps.calculateComplexity(allocator, content, lang) catch null;
+    defer if (records_opt) |recs| { for (recs) |r| r.deinit(allocator); allocator.free(recs); };
+    var max: u32 = 0;
+    if (records_opt) |recs| {
+        for (recs) |r| {
+            if (r.complexity > max) max = r.complexity;
+        }
+    }
+    return max;
+}
+
+fn computePriorityScore(blast_risk: blast.RiskLevel, max_complexity: u32, total_findings: usize) u32 {
+    const base = max_complexity * 2 + @as(u32, @intCast(total_findings)) * 3;
+    return switch (blast_risk) {
+        .low => base,
+        .medium => base / 2,
+        .high => base / 4,
+    };
+}
+
+fn buildInspectEvidenceJson(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    actual_hash: [64]u8,
+    total_findings: usize,
+    max_complexity: u32,
+    blast_risk: blast.RiskLevel,
+    priority_score: u32,
+    page: u32,
+    page_size: u32,
+    page_findings: []noise.NoiseFinding,
+) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try buf.appendSlice(allocator, "{\"file\":");
@@ -100,17 +137,5 @@ pub fn executeInspectEvidenceWithDeps(allocator: std.mem.Allocator, args: ?std.j
         try buf.append(allocator, '}');
     }
     try buf.print(allocator, "],\"page\":{d},\"page_size\":{d},\"total\":{d}}}", .{ page, page_size, total_findings });
-
-    if (deps.db.open(allocator, root)) |db_inst| {
-        var db = db_inst;
-        defer db.close();
-        db.recordFileCacheSlice(allocator, path, 0, @intCast(content.len), &actual_hash, @intCast(total_findings), @intCast(max_complexity)) catch {};
-    } else |_| {}
-
-    return ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false };
-}
-
-pub fn executeInspectEvidence(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
-    const default = deps_mod.defaultDeps();
-    return executeInspectEvidenceWithDeps(allocator, args, &default);
+    return buf.toOwnedSlice(allocator);
 }
