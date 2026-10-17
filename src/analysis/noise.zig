@@ -458,31 +458,7 @@ fn extractStringLiteralContent(raw: []const u8) ?[]const u8 {
         return raw[1 .. raw.len - 1];
     }
 
-    // Python / C# triple quotes: """content""" or '''content'''
-    if (raw.len >= 6) {
-        if (std.mem.startsWith(u8, raw, "\"\"\"") and std.mem.endsWith(u8, raw, "\"\"\"")) {
-            return raw[3 .. raw.len - 3];
-        }
-        if (std.mem.startsWith(u8, raw, "'''") and std.mem.endsWith(u8, raw, "'''")) {
-            return raw[3 .. raw.len - 3];
-        }
-    }
-
-    // Python raw triple quotes: r"""content""" or r'''content'''
-    if (raw.len >= 7) {
-        if ((raw[0] == 'r' or raw[0] == 'R') and
-            std.mem.startsWith(u8, raw[1..], "\"\"\"") and
-            std.mem.endsWith(u8, raw, "\"\"\""))
-        {
-            return raw[4 .. raw.len - 3];
-        }
-        if ((raw[0] == 'r' or raw[0] == 'R') and
-            std.mem.startsWith(u8, raw[1..], "'''") and
-            std.mem.endsWith(u8, raw, "'''"))
-        {
-            return raw[4 .. raw.len - 3];
-        }
-    }
+    if (extractTripleQuoted(raw)) |inner| return inner;
 
     // Python raw string: r"content" or r'content'
     if (raw.len >= 3 and (raw[0] == 'r' or raw[0] == 'R')) {
@@ -499,29 +475,7 @@ fn extractStringLiteralContent(raw: []const u8) ?[]const u8 {
     }
 
     // Rust raw string: r"content", r#"content"#, r##"content"##
-    if (raw.len >= 3 and raw[0] == 'r') {
-        var hashes: usize = 0;
-        while (1 + hashes < raw.len and raw[1 + hashes] == '#') : (hashes += 1) {}
-        if (1 + hashes < raw.len and raw[1 + hashes] == '"') {
-            const prefix_len = hashes + 2;
-            const suffix_len = hashes + 1;
-            if (raw.len >= prefix_len + suffix_len) {
-                if (raw[raw.len - 1 - hashes] == '"') {
-                    var all_hashes = true;
-                    var h: usize = 0;
-                    while (h < hashes) : (h += 1) {
-                        if (raw[raw.len - 1 - h] != '#') {
-                            all_hashes = false;
-                            break;
-                        }
-                    }
-                    if (all_hashes) {
-                        return raw[prefix_len .. raw.len - suffix_len];
-                    }
-                }
-            }
-        }
-    }
+    if (extractRustRawString(raw)) |inner| return inner;
 
     // Standard string: "content" or 'content'
     if ((raw[0] == '"' and raw[raw.len - 1] == '"') or
@@ -1267,4 +1221,40 @@ fn checkRawBoolean(
         .message = "raw compound boolean condition (extract to domain predicate)",
         .snippet = grammars.getLineSnippet(source, pt.row),
     });
+}
+
+fn extractRustRawString(raw: []const u8) ?[]const u8 {
+    if (raw.len < 3 or raw[0] != 'r') return null;
+    var hashes: usize = 0;
+    while (1 + hashes < raw.len and raw[1 + hashes] == '#') : (hashes += 1) {}
+    if (!(1 + hashes < raw.len and raw[1 + hashes] == '"')) return null;
+    const prefix_len = hashes + 2;
+    const suffix_len = hashes + 1;
+    if (raw.len < prefix_len + suffix_len) return null;
+    if (raw[raw.len - 1 - hashes] != '"') return null;
+    var h: usize = 0;
+    while (h < hashes) : (h += 1) {
+        if (raw[raw.len - 1 - h] != '#') return null;
+    }
+    return raw[prefix_len .. raw.len - suffix_len];
+}
+
+fn extractTripleQuoted(raw: []const u8) ?[]const u8 {
+    if (raw.len >= 6 and std.mem.startsWith(u8, raw, "\"\"\"") and std.mem.endsWith(u8, raw, "\"\"\"")) {
+        return raw[3 .. raw.len - 3];
+    }
+    if (raw.len >= 6 and std.mem.startsWith(u8, raw, "'''") and std.mem.endsWith(u8, raw, "'''")) {
+        return raw[3 .. raw.len - 3];
+    }
+    if (raw.len >= 7 and (raw[0] == 'r' or raw[0] == 'R') and
+        std.mem.startsWith(u8, raw[1..], "\"\"\"") and std.mem.endsWith(u8, raw, "\"\"\""))
+    {
+        return raw[4 .. raw.len - 3];
+    }
+    if (raw.len >= 7 and (raw[0] == 'r' or raw[0] == 'R') and
+        std.mem.startsWith(u8, raw[1..], "'''") and std.mem.endsWith(u8, raw, "'''"))
+    {
+        return raw[4 .. raw.len - 3];
+    }
+    return null;
 }
