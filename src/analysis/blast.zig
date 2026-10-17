@@ -66,23 +66,7 @@ pub fn parseFileInputs(allocator: std.mem.Allocator, files: []const FileInput) !
     errdefer allocator.free(list);
 
     for (files, 0..) |f, i| {
-        const lang = grammars.Language.fromPath(f.path);
-        var parsed_tree: ?bindings.Tree = null;
-        if (lang.getTsLanguage()) |tl| {
-            if (bindings.Parser.init()) |parser_inst| {
-                var parser = parser_inst;
-                defer parser.deinit();
-                if (parser.setLanguage(tl)) {
-                    parsed_tree = parser.parseString(f.content) catch null;
-                }
-            } else |_| {}
-        }
-        list[i] = .{
-            .path = f.path,
-            .content = f.content,
-            .lang = lang,
-            .tree = parsed_tree,
-        };
+        list[i] = parseOneFile(f);
     }
     return list;
 }
@@ -736,4 +720,24 @@ test "analyzeBlastRadiusParsed - reuses ASTs across multiple symbol queries" {
     var b = res_beta;
     defer b.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 1), b.total_usages);
+}
+
+fn parseOneFile(f: FileInput) ParsedFile {
+    const lang = grammars.Language.fromPath(f.path);
+    var parsed_tree: ?bindings.Tree = null;
+    if (lang.getTsLanguage()) |tl| {
+        if (bindings.Parser.init()) |parser_inst| {
+            var parser = parser_inst;
+            defer parser.deinit();
+            if (parser.setLanguage(tl)) {
+                parsed_tree = parser.parseString(f.content) catch null;
+            }
+        } else |_| {}
+    }
+    return .{
+        .path = f.path,
+        .content = f.content,
+        .lang = lang,
+        .tree = parsed_tree,
+    };
 }
