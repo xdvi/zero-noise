@@ -123,6 +123,7 @@ pub fn build(b: *std.Build) void {
     run_mod_tests.setCwd(b.path("."));
 
     const test_step = b.step("test", "Run library and integration tests");
+    test_step.dependOn(b.getInstallStep());
     test_step.dependOn(&run_mod_tests.step);
 
     const bench_exe = b.addExecutable(.{
