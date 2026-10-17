@@ -91,65 +91,8 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
     // Enforcement of max_blast_risk
     if (max_blast_risk_str) |mbr| {
         if (!force) {
-            const allowed_opt: ?blast.RiskLevel = if (std.mem.eql(u8, mbr, "low"))
-                .low
-            else if (std.mem.eql(u8, mbr, "medium"))
-                .medium
-            else if (std.mem.eql(u8, mbr, "high"))
-                .high
-            else
-                null;
-
-            if (allowed_opt) |allowed| {
-                const target_content = deps.fs.readFileAlloc(allocator, filepath) catch null;
-                defer if (target_content) |tc| allocator.free(tc);
-
-                if (target_content) |tc| {
-                    const actual_risk = risk.computeFileBlastRisk(allocator, filepath, tc, root, deps);
-                    const risk_val: u8 = switch (actual_risk) {
-                        .low => 1,
-                        .medium => 2,
-                        .high => 3,
-                    };
-                    const allowed_val: u8 = switch (allowed) {
-                        .low => 1,
-                        .medium => 2,
-                        .high => 3,
-                    };
-
-                    if (risk_val > allowed_val) {
-                        if (maybe_ledger) |*ledger| {
-                            if (task_id) |tid| {
-                                ledger.updateTaskStatus(tid, "aborted") catch {};
-                            }
-                        }
-                        const err_msg = try std.fmt.allocPrint(
-                            allocator,
-                            "Blast radius risk '{s}' exceeds maximum allowed risk '{s}' (use force=true to override)",
-                            .{ actual_risk.asString(), mbr },
-                        );
-                        defer allocator.free(err_msg);
-
-                        if (compact.isCompact(format)) {
-                            const text = try compact.formatRefactor(allocator, filepath, "aborted", expected_hash orelse "unlocked", err_msg);
-                            return ToolResult{ .text = text, .is_error = true };
-                        }
-
-                        if (std.mem.eql(u8, format, "json")) {
-                            var buf: std.ArrayList(u8) = .empty;
-                            defer buf.deinit(allocator);
-                            try buf.appendSlice(allocator, "{\"filepath\":");
-                            try common.appendJsonEscaped(&buf, allocator, filepath);
-                            try buf.appendSlice(allocator, ",\"status\":\"aborted\",\"diff\":\"\",\"error\":");
-                            try common.appendJsonEscaped(&buf, allocator, err_msg);
-                            try buf.append(allocator, '}');
-                            return ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = true };
-                        }
-
-                        const text = try std.fmt.allocPrint(allocator, "Safe Refactor ({s}): status aborted\nError: {s}\n", .{ filepath, err_msg });
-                        return ToolResult{ .text = text, .is_error = true };
-                    }
-                }
+            if (try enforceBlastRisk(allocator, filepath, root, mbr, deps, maybe_ledger, task_id, format, expected_hash)) |blocked| {
+                return blocked;
             }
         }
     }
@@ -234,4 +177,77 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
 pub fn executeSafeRefactor(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
     const default = deps_mod.defaultDeps();
     return executeSafeRefactorWithDeps(allocator, args, &default);
+}
+
+fn enforceBlastRisk(
+    allocator: std.mem.Allocator,
+    filepath: []const u8,
+    root: []const u8,
+    mbr: []const u8,
+    deps: *const deps_mod.Deps,
+    maybe_ledger: ?ledger_mod.RefactorLedger,
+    task_id: ?[]const u8,
+    format: []const u8,
+    expected_hash: ?[]const u8,
+) !?ToolResult {
+    const allowed: ?blast.RiskLevel = if (std.mem.eql(u8, mbr, "low"))
+        .low
+    else if (std.mem.eql(u8, mbr, "medium"))
+        .medium
+    else if (std.mem.eql(u8, mbr, "high"))
+        .high
+    else
+        null;
+
+    const allowed_level = allowed orelse return null;
+
+    const target_content = deps.fs.readFileAlloc(allocator, filepath) catch return null;
+    defer allocator.free(target_content);
+
+    const actual_risk = risk.computeFileBlastRisk(allocator, filepath, target_content, root, deps);
+    const risk_val: u8 = switch (actual_risk) {
+        .low => 1,
+        .medium => 2,
+        .high => 3,
+    };
+    const allowed_val: u8 = switch (allowed_level) {
+        .low => 1,
+        .medium => 2,
+        .high => 3,
+    };
+
+    if (risk_val <= allowed_val) return null;
+
+    if (maybe_ledger) |ledger| {
+        var l = ledger;
+        if (task_id) |tid| {
+            l.updateTaskStatus(tid, "aborted") catch {};
+        }
+    }
+
+    const err_msg = try std.fmt.allocPrint(
+        allocator,
+        "Blast radius risk '{s}' exceeds maximum allowed risk '{s}' (use force=true to override)",
+        .{ actual_risk.asString(), mbr },
+    );
+    defer allocator.free(err_msg);
+
+    if (compact.isCompact(format)) {
+        const text = try compact.formatRefactor(allocator, filepath, "aborted", expected_hash orelse "unlocked", err_msg);
+        return ToolResult{ .text = text, .is_error = true };
+    }
+
+    if (std.mem.eql(u8, format, "json")) {
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(allocator);
+        try buf.appendSlice(allocator, "{\"filepath\":");
+        try common.appendJsonEscaped(&buf, allocator, filepath);
+        try buf.appendSlice(allocator, ",\"status\":\"aborted\",\"diff\":\"\",\"error\":");
+        try common.appendJsonEscaped(&buf, allocator, err_msg);
+        try buf.append(allocator, '}');
+        return ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = true };
+    }
+
+    const text = try std.fmt.allocPrint(allocator, "Safe Refactor ({s}): status aborted\nError: {s}\n", .{ filepath, err_msg });
+    return ToolResult{ .text = text, .is_error = true };
 }
