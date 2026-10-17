@@ -11,71 +11,84 @@ pub fn auditNoise(
     const items = if (@hasField(@TypeOf(findings), "items")) findings.items else findings;
 
     if (compact.isCompact(format)) {
-        if (items.len == 0) {
-            const text = try compact.formatNoise(allocator, path, 1, 1, "audit_noise", "0 structural noise violations detected.");
-            return common.ToolResult{ .text = text, .is_error = false, .count = 0 };
-        }
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        for (items) |item| {
-            const line = try compact.formatNoise(allocator, item.file, item.line, item.column, item.rule.asString(), item.message);
-            defer allocator.free(line);
-            try buf.appendSlice(allocator, line);
-            try buf.append(allocator, '\n');
-        }
-        return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = items.len };
+        return formatAuditCompact(allocator, path, items);
     }
-
     if (std.mem.eql(u8, format, "json")) {
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        try buf.appendSlice(allocator, "{\"path\":");
-        try common.appendJsonEscaped(&buf, allocator, path);
-        try buf.appendSlice(allocator, ",\"violations\":[");
-        for (items, 0..) |item, idx| {
-            if (idx > 0) try buf.append(allocator, ',');
-            try buf.appendSlice(allocator, "{\"file\":");
-            try common.appendJsonEscaped(&buf, allocator, item.file);
-            try buf.appendSlice(allocator, ",\"rule\":");
-            try common.appendJsonEscaped(&buf, allocator, item.rule.asString());
-            try buf.print(allocator, ",\"line\":{d},\"column\":{d},\"message\":", .{
-                item.line,
-                item.column,
-            });
-            try common.appendJsonEscaped(&buf, allocator, item.message);
-            try buf.append(allocator, '}');
-        }
-        try buf.print(allocator, "],\"total_noise\":{d}}}", .{items.len});
-        return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = items.len };
+        return formatAuditJson(allocator, path, items);
     }
-
     if (std.mem.eql(u8, format, "sarif")) {
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        try buf.appendSlice(allocator, "{\"$schema\":\"https://json.schemastore.org/sarif-2.1.0.json\",\"version\":\"2.1.0\",\"runs\":[{\"tool\":{\"driver\":{\"name\":\"zero-noise\",\"version\":\"0.1.0\"}},\"results\":[");
-        for (items, 0..) |item, idx| {
-            if (idx > 0) try buf.append(allocator, ',');
-            try buf.appendSlice(allocator, "{\"ruleId\":");
-            try common.appendJsonEscaped(&buf, allocator, item.rule.asString());
-            try buf.appendSlice(allocator, ",\"message\":{\"text\":");
-            try common.appendJsonEscaped(&buf, allocator, item.message);
-            try buf.appendSlice(allocator, "},\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":");
-            try common.appendJsonEscaped(&buf, allocator, item.file);
-            try buf.appendSlice(allocator, "},\"region\":{\"startLine\":");
-            try buf.print(allocator, "{d}", .{item.line});
-            try buf.appendSlice(allocator, ",\"startColumn\":");
-            try buf.print(allocator, "{d}", .{item.column});
-            try buf.appendSlice(allocator, "}}}]}");
-        }
-        try buf.appendSlice(allocator, "]}]}");
-        return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = items.len };
+        return formatAuditSarif(allocator, path, items);
     }
+    return formatAuditText(allocator, path, items);
+}
 
+fn formatAuditCompact(allocator: std.mem.Allocator, path: []const u8, items: anytype) !common.ToolResult {
+    if (items.len == 0) {
+        const text = try compact.formatNoise(allocator, path, 1, 1, "audit_noise", "0 structural noise violations detected.");
+        return common.ToolResult{ .text = text, .is_error = false, .count = 0 };
+    }
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    for (items) |item| {
+        const line = try compact.formatNoise(allocator, item.file, item.line, item.column, item.rule.asString(), item.message);
+        defer allocator.free(line);
+        try buf.appendSlice(allocator, line);
+        try buf.append(allocator, '\n');
+    }
+    return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = items.len };
+}
+
+fn formatAuditJson(allocator: std.mem.Allocator, path: []const u8, items: anytype) !common.ToolResult {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "{\"path\":");
+    try common.appendJsonEscaped(&buf, allocator, path);
+    try buf.appendSlice(allocator, ",\"violations\":[");
+    for (items, 0..) |item, idx| {
+        if (idx > 0) try buf.append(allocator, ',');
+        try buf.appendSlice(allocator, "{\"file\":");
+        try common.appendJsonEscaped(&buf, allocator, item.file);
+        try buf.appendSlice(allocator, ",\"rule\":");
+        try common.appendJsonEscaped(&buf, allocator, item.rule.asString());
+        try buf.print(allocator, ",\"line\":{d},\"column\":{d},\"message\":", .{
+            item.line,
+            item.column,
+        });
+        try common.appendJsonEscaped(&buf, allocator, item.message);
+        try buf.append(allocator, '}');
+    }
+    try buf.print(allocator, "],\"total_noise\":{d}}}", .{items.len});
+    return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = items.len };
+}
+
+fn formatAuditSarif(allocator: std.mem.Allocator, path: []const u8, items: anytype) !common.ToolResult {
+    _ = path;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "{\"$schema\":\"https://json.schemastore.org/sarif-2.1.0.json\",\"version\":\"2.1.0\",\"runs\":[{\"tool\":{\"driver\":{\"name\":\"zero-noise\",\"version\":\"0.1.0\"}},\"results\":[");
+    for (items, 0..) |item, idx| {
+        if (idx > 0) try buf.append(allocator, ',');
+        try buf.appendSlice(allocator, "{\"ruleId\":");
+        try common.appendJsonEscaped(&buf, allocator, item.rule.asString());
+        try buf.appendSlice(allocator, ",\"message\":{\"text\":");
+        try common.appendJsonEscaped(&buf, allocator, item.message);
+        try buf.appendSlice(allocator, "},\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":");
+        try common.appendJsonEscaped(&buf, allocator, item.file);
+        try buf.appendSlice(allocator, "},\"region\":{\"startLine\":");
+        try buf.print(allocator, "{d}", .{item.line});
+        try buf.appendSlice(allocator, ",\"startColumn\":");
+        try buf.print(allocator, "{d}", .{item.column});
+        try buf.appendSlice(allocator, "}}}]}");
+    }
+    try buf.appendSlice(allocator, "]}]}");
+    return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = items.len };
+}
+
+fn formatAuditText(allocator: std.mem.Allocator, path: []const u8, items: anytype) !common.ToolResult {
     if (items.len == 0) {
         const text = try std.fmt.allocPrint(allocator, "Zero-Noise Audit: {s} - 0 violations found.", .{path});
         return common.ToolResult{ .text = text, .is_error = false, .count = 0 };
     }
-
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try buf.print(allocator, "Zero-Noise Audit: {s} - {d} structural noise violation(s) found:\n", .{ path, items.len });
@@ -90,7 +103,6 @@ pub fn auditNoise(
     }
     return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = items.len };
 }
-
 pub fn complexity(
     allocator: std.mem.Allocator,
     path: []const u8,
