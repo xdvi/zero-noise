@@ -202,57 +202,7 @@ pub fn executeEvaluateRulesWithDeps(allocator: std.mem.Allocator, args: ?std.jso
     for (files_list.items) |file_path| {
         const content = deps.fs.readFileAlloc(allocator, file_path) catch continue;
         defer allocator.free(content);
-
-        for (rules_array) |rule_val| {
-            if (rule_val != .object) continue;
-            const robj = rule_val.object;
-
-            if (robj.get("languages")) |langs_val| {
-                if (langs_val == .array) {
-                    var matches_lang = false;
-                    for (langs_val.array.items) |l_item| {
-                        if (l_item == .string) {
-                            const filter_lang = grammars.Language.fromName(l_item.string);
-                            if (filter_lang != .unknown) {
-                                if (filter_lang == grammars.Language.fromPath(file_path)) {
-                                    matches_lang = true;
-                                    break;
-                                }
-                            } else if (std.mem.endsWith(u8, file_path, l_item.string)) {
-                                matches_lang = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (!matches_lang) continue;
-                }
-            }
-
-            const rule_id = if (robj.get("id")) |id_v| (if (id_v == .string) id_v.string else "custom-rule") else "custom-rule";
-            const rule_pattern = if (robj.get("pattern")) |p_v| (if (p_v == .string) p_v.string else "") else "";
-            if (rule_pattern.len == 0) continue;
-            const rule_msg = if (robj.get("message")) |m_v| (if (m_v == .string) m_v.string else "Custom rule violation") else "Custom rule violation";
-
-            var line_no: u32 = 1;
-            var line_start: usize = 0;
-            var i: usize = 0;
-            while (i <= content.len) : (i += 1) {
-                if (i == content.len or content[i] == '\n') {
-                    const line = content[line_start..i];
-                    if (matchesPattern(line, rule_pattern)) |match_idx| {
-                        try all_findings.append(allocator, .{
-                            .file = try allocator.dupe(u8, file_path),
-                            .rule = try allocator.dupe(u8, rule_id),
-                            .line = line_no,
-                            .column = @intCast(match_idx + 1),
-                            .message = try allocator.dupe(u8, rule_msg),
-                        });
-                    }
-                    line_no += 1;
-                    line_start = i + 1;
-                }
-            }
-        }
+        try evaluateRulesForFile(allocator, file_path, content, rules_array, &all_findings);
     }
 
     return fmt.evaluateRules(allocator, path, all_findings, format);
@@ -261,4 +211,77 @@ pub fn executeEvaluateRulesWithDeps(allocator: std.mem.Allocator, args: ?std.jso
 pub fn executeEvaluateRules(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
     const default = deps_mod.defaultDeps();
     return executeEvaluateRulesWithDeps(allocator, args, &default);
+}
+
+fn evaluateRulesForFile(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    content: []const u8,
+    rules_array: []const std.json.Value,
+    all_findings: *std.ArrayList(CustomRuleFinding),
+) !void {
+    for (rules_array) |rule_val| {
+        if (rule_val != .object) continue;
+        const robj = rule_val.object;
+
+        if (!languageMatches(robj, file_path)) continue;
+
+        const rule_id = stringField(robj, "id", "custom-rule");
+        const rule_pattern = stringField(robj, "pattern", "");
+        if (rule_pattern.len == 0) continue;
+        const rule_msg = stringField(robj, "message", "Custom rule violation");
+
+        try appendRuleMatches(allocator, file_path, content, rule_id, rule_pattern, rule_msg, all_findings);
+    }
+}
+
+fn languageMatches(robj: std.json.ObjectMap, file_path: []const u8) bool {
+    const langs_val = robj.get("languages") orelse return true;
+    if (langs_val != .array) return true;
+    for (langs_val.array.items) |l_item| {
+        if (l_item != .string) continue;
+        const filter_lang = grammars.Language.fromName(l_item.string);
+        if (filter_lang != .unknown) {
+            if (filter_lang == grammars.Language.fromPath(file_path)) return true;
+        } else if (std.mem.endsWith(u8, file_path, l_item.string)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn appendRuleMatches(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    content: []const u8,
+    rule_id: []const u8,
+    rule_pattern: []const u8,
+    rule_msg: []const u8,
+    all_findings: *std.ArrayList(CustomRuleFinding),
+) !void {
+    var line_no: u32 = 1;
+    var line_start: usize = 0;
+    var i: usize = 0;
+    while (i <= content.len) : (i += 1) {
+        if (i == content.len or content[i] == '\n') {
+            const line = content[line_start..i];
+            if (matchesPattern(line, rule_pattern)) |match_idx| {
+                try all_findings.append(allocator, .{
+                    .file = try allocator.dupe(u8, file_path),
+                    .rule = try allocator.dupe(u8, rule_id),
+                    .line = line_no,
+                    .column = @intCast(match_idx + 1),
+                    .message = try allocator.dupe(u8, rule_msg),
+                });
+            }
+            line_no += 1;
+            line_start = i + 1;
+        }
+    }
+}
+
+fn stringField(robj: std.json.ObjectMap, key: []const u8, default_val: []const u8) []const u8 {
+    const v = robj.get(key) orelse return default_val;
+    if (v != .string) return default_val;
+    return v.string;
 }
