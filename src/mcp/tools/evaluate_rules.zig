@@ -226,60 +226,72 @@ const PatternStep = struct {
 fn advancePatternState(line: []const u8, i: usize, needle: []const u8, pattern: []const u8, state: PatternScanState) PatternStep {
     var s = state;
     if (!s.in_sq and !s.in_dq and !s.in_bt and !s.in_block) {
-        if (i + 1 < line.len and line[i] == '/' and line[i + 1] == '/') {
-            return .{ .next_i = i, .state = s, .stop = true };
-        }
-        if (line[i] == '#') {
-            return .{ .next_i = i, .state = s, .stop = true };
-        }
-        if (i + 1 < line.len and line[i] == '/' and line[i + 1] == '*') {
-            s.in_block = true;
-            return .{ .next_i = i + 2, .state = s };
-        }
-        if (line[i] == '"') {
-            s.in_dq = true;
-            return .{ .next_i = i + 1, .state = s };
-        }
-        if (line[i] == '\'') {
-            s.in_sq = true;
-            return .{ .next_i = i + 1, .state = s };
-        }
-        if (line[i] == '`') {
-            s.in_bt = true;
-            return .{ .next_i = i + 1, .state = s };
-        }
-        if (needle.len > 0 and std.mem.startsWith(u8, line[i..], needle)) {
-            return .{ .next_i = i, .state = s, .matched = true, .match_index = i };
-        }
-        if (std.mem.startsWith(u8, line[i..], pattern)) {
-            return .{ .next_i = i, .state = s, .matched = true, .match_index = i };
-        }
-        return .{ .next_i = i + 1, .state = s };
+        return advanceNormalState(line, i, needle, pattern, &s);
     }
-    if (s.in_block) {
-        if (i + 1 < line.len and line[i] == '*' and line[i + 1] == '/') {
-            s.in_block = false;
-            return .{ .next_i = i + 2, .state = s };
-        }
-        return .{ .next_i = i + 1, .state = s };
-    }
-    if (s.in_dq) {
-        if (line[i] == '\\' and i + 1 < line.len) {
-            return .{ .next_i = i + 2, .state = s };
-        }
-        if (line[i] == '"') s.in_dq = false;
-        return .{ .next_i = i + 1, .state = s };
-    }
-    if (s.in_sq) {
-        if (line[i] == '\\' and i + 1 < line.len) {
-            return .{ .next_i = i + 2, .state = s };
-        }
-        if (line[i] == '\'') s.in_sq = false;
-        return .{ .next_i = i + 1, .state = s };
-    }
-    if (s.in_bt) {
-        if (line[i] == '`') s.in_bt = false;
-        return .{ .next_i = i + 1, .state = s };
-    }
+    if (s.in_block) return advanceBlockState(line, i, &s);
+    if (s.in_dq) return advanceDoubleQuoteState(line, i, &s);
+    if (s.in_sq) return advanceSingleQuoteState(line, i, &s);
+    if (s.in_bt) return advanceBacktickState(line, i, &s);
     return .{ .next_i = i + 1, .state = s };
+}
+
+fn advanceNormalState(line: []const u8, i: usize, needle: []const u8, pattern: []const u8, s: *PatternScanState) PatternStep {
+    if (i + 1 < line.len and line[i] == '/' and line[i + 1] == '/') {
+        return .{ .next_i = i, .state = s.*, .stop = true };
+    }
+    if (line[i] == '#') {
+        return .{ .next_i = i, .state = s.*, .stop = true };
+    }
+    if (i + 1 < line.len and line[i] == '/' and line[i + 1] == '*') {
+        s.in_block = true;
+        return .{ .next_i = i + 2, .state = s.* };
+    }
+    if (line[i] == '"') {
+        s.in_dq = true;
+        return .{ .next_i = i + 1, .state = s.* };
+    }
+    if (line[i] == '\'') {
+        s.in_sq = true;
+        return .{ .next_i = i + 1, .state = s.* };
+    }
+    if (line[i] == '`') {
+        s.in_bt = true;
+        return .{ .next_i = i + 1, .state = s.* };
+    }
+    if (needle.len > 0 and std.mem.startsWith(u8, line[i..], needle)) {
+        return .{ .next_i = i, .state = s.*, .matched = true, .match_index = i };
+    }
+    if (std.mem.startsWith(u8, line[i..], pattern)) {
+        return .{ .next_i = i, .state = s.*, .matched = true, .match_index = i };
+    }
+    return .{ .next_i = i + 1, .state = s.* };
+}
+
+fn advanceBlockState(line: []const u8, i: usize, s: *PatternScanState) PatternStep {
+    if (i + 1 < line.len and line[i] == '*' and line[i + 1] == '/') {
+        s.in_block = false;
+        return .{ .next_i = i + 2, .state = s.* };
+    }
+    return .{ .next_i = i + 1, .state = s.* };
+}
+
+fn advanceDoubleQuoteState(line: []const u8, i: usize, s: *PatternScanState) PatternStep {
+    if (line[i] == '\\' and i + 1 < line.len) {
+        return .{ .next_i = i + 2, .state = s.* };
+    }
+    if (line[i] == '"') s.in_dq = false;
+    return .{ .next_i = i + 1, .state = s.* };
+}
+
+fn advanceSingleQuoteState(line: []const u8, i: usize, s: *PatternScanState) PatternStep {
+    if (line[i] == '\\' and i + 1 < line.len) {
+        return .{ .next_i = i + 2, .state = s.* };
+    }
+    if (line[i] == '\'') s.in_sq = false;
+    return .{ .next_i = i + 1, .state = s.* };
+}
+
+fn advanceBacktickState(line: []const u8, i: usize, s: *PatternScanState) PatternStep {
+    if (line[i] == '`') s.in_bt = false;
+    return .{ .next_i = i + 1, .state = s.* };
 }
