@@ -297,17 +297,40 @@ pub fn parseDeMorganInner(allocator: std.mem.Allocator, inner: []const u8) !?[]u
     const trimmed = std.mem.trim(u8, inner, " \t\r\n");
     if (trimmed.len < 5) return null;
 
-    var op_is_or: ?bool = null;
     var terms: std.ArrayList([]const u8) = .empty;
     defer terms.deinit(allocator);
+    var op_is_or: ?bool = null;
 
+    if (!collectDeMorganTerms(allocator, trimmed, &terms, &op_is_or)) return null;
+
+    if (terms.items.len < 2 or op_is_or == null) return null;
+
+    const new_op: []const u8 = if (op_is_or.?) " && " else " || ";
+
+    var result: std.ArrayList(u8) = .empty;
+    defer result.deinit(allocator);
+
+    for (terms.items, 0..) |t, t_idx| {
+        if (t_idx > 0) try result.appendSlice(allocator, new_op);
+        try result.appendSlice(allocator, t);
+    }
+
+    return try result.toOwnedSlice(allocator);
+}
+
+fn collectDeMorganTerms(
+    allocator: std.mem.Allocator,
+    trimmed: []const u8,
+    terms: *std.ArrayList([]const u8),
+    op_is_or: *?bool,
+) bool {
     var idx: usize = 0;
     while (idx < trimmed.len) {
         idx = skipWhitespace(trimmed, idx);
         if (idx >= trimmed.len) break;
 
-        if (trimmed[idx] != '!') return null;
-        if (idx + 1 < trimmed.len and trimmed[idx + 1] == '=') return null;
+        if (trimmed[idx] != '!') return false;
+        if (idx + 1 < trimmed.len and trimmed[idx + 1] == '=') return false;
 
         idx += 1;
         idx = skipWhitespace(trimmed, idx);
@@ -326,17 +349,17 @@ pub fn parseDeMorganInner(allocator: std.mem.Allocator, inner: []const u8) !?[]u
                 paren_depth -= 1;
             } else if (paren_depth == 0) {
                 if (ch == '|' and idx + 1 < trimmed.len and trimmed[idx + 1] == '|') {
-                    if (op_is_or == null) {
-                        op_is_or = true;
-                    } else if (op_is_or.? != true) {
-                        return null;
+                    if (op_is_or.* == null) {
+                        op_is_or.* = true;
+                    } else if (op_is_or.*.? != true) {
+                        return false;
                     }
                     break;
                 } else if (ch == '&' and idx + 1 < trimmed.len and trimmed[idx + 1] == '&') {
-                    if (op_is_or == null) {
-                        op_is_or = false;
-                    } else if (op_is_or.? != false) {
-                        return null;
+                    if (op_is_or.* == null) {
+                        op_is_or.* = false;
+                    } else if (op_is_or.*.? != false) {
+                        return false;
                     }
                     break;
                 }
@@ -346,27 +369,14 @@ pub fn parseDeMorganInner(allocator: std.mem.Allocator, inner: []const u8) !?[]u
 
         const raw_term = trimmed[term_start..idx];
         const term = std.mem.trim(u8, raw_term, " \t\r\n");
-        if (term.len == 0) return null;
-        try terms.append(allocator, term);
+        if (term.len == 0) return false;
+        terms.append(allocator, term) catch return false;
 
         if (idx < trimmed.len) {
             idx += 2;
         }
     }
-
-    if (terms.items.len < 2 or op_is_or == null) return null;
-
-    const new_op: []const u8 = if (op_is_or.?) " && " else " || ";
-
-    var result: std.ArrayList(u8) = .empty;
-    defer result.deinit(allocator);
-
-    for (terms.items, 0..) |t, t_idx| {
-        if (t_idx > 0) try result.appendSlice(allocator, new_op);
-        try result.appendSlice(allocator, t);
-    }
-
-    return try result.toOwnedSlice(allocator);
+    return true;
 }
 
 pub fn shouldWrapDeMorgan(src: []const u8, start: usize, end: usize) bool {
