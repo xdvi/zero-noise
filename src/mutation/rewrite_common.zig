@@ -29,100 +29,113 @@ pub fn matchKeyword(src: []const u8, idx: usize, kw: []const u8) bool {
 pub fn skipTriviaOrLiteral(src: []const u8, idx: usize) ?usize {
     if (idx >= src.len) return null;
 
-    if (src[idx] == '/' and idx + 1 < src.len and src[idx + 1] == '/') {
-        var i = idx + 2;
-        while (i < src.len and src[i] != '\n') : (i += 1) {}
-        return i;
-    }
-
-    if (src[idx] == '/' and idx + 1 < src.len and src[idx + 1] == '*') {
-        var i = idx + 2;
-        while (i + 1 < src.len and !(src[i] == '*' and src[i + 1] == '/')) : (i += 1) {}
-        if (i + 1 < src.len) return i + 2;
-        return src.len;
-    }
-
-    if (src[idx] == '#') {
-        var i = idx + 1;
-        while (i < src.len and src[i] != '\n') : (i += 1) {}
-        return i;
-    }
-
-    if (src[idx] == 'r' and idx + 1 < src.len) {
-        var h: usize = 0;
-        var p = idx + 1;
-        while (p < src.len and src[p] == '#') : (p += 1) {
-            h += 1;
-        }
-        if (p < src.len and (src[p] == '"' or (h == 0 and src[p] == '\''))) {
-            const quote = src[p];
-            var i = p + 1;
-            while (i < src.len) {
-                if (src[i] == quote) {
-                    var matched = true;
-                    if (i + 1 + h > src.len) {
-                        matched = false;
-                    } else {
-                        for (0..h) |k| {
-                            if (src[i + 1 + k] != '#') {
-                                matched = false;
-                                break;
-                            }
-                        }
-                    }
-                    if (matched) {
-                        return i + 1 + h;
-                    }
-                }
-                i += 1;
-            }
-            return src.len;
-        }
-    }
-
-    if (src[idx] == '@' and idx + 1 < src.len and src[idx + 1] == '"') {
-        var i = idx + 2;
-        while (i < src.len) {
-            if (src[i] == '"') {
-                if (i + 1 < src.len and src[i + 1] == '"') {
-                    i += 2;
-                    continue;
-                }
-                return i + 1;
-            }
-            i += 1;
-        }
-        return src.len;
-    }
-
-    if (src[idx] == '`') {
-        var i = idx + 1;
-        while (i < src.len and src[i] != '`') {
-            if (src[i] == '\\' and i + 1 < src.len) {
-                i += 2;
-            } else {
-                i += 1;
-            }
-        }
-        if (i < src.len) return i + 1;
-        return src.len;
-    }
-
-    if (src[idx] == '"' or src[idx] == '\'') {
-        const quote = src[idx];
-        var i = idx + 1;
-        while (i < src.len and src[i] != quote) {
-            if (src[i] == '\\' and i + 1 < src.len) {
-                i += 2;
-            } else {
-                i += 1;
-            }
-        }
-        if (i < src.len) return i + 1;
-        return src.len;
-    }
+    if (skipLineComment(src, idx)) |r| return r;
+    if (skipBlockComment(src, idx)) |r| return r;
+    if (skipHashComment(src, idx)) |r| return r;
+    if (skipRawString(src, idx)) |r| return r;
+    if (skipVerbatimString(src, idx)) |r| return r;
+    if (skipBacktickString(src, idx)) |r| return r;
+    if (skipQuotedString(src, idx)) |r| return r;
 
     return null;
+}
+
+fn skipLineComment(src: []const u8, idx: usize) ?usize {
+    if (src[idx] != '/' or idx + 1 >= src.len or src[idx + 1] != '/') return null;
+    var i = idx + 2;
+    while (i < src.len and src[i] != '\n') : (i += 1) {}
+    return i;
+}
+
+fn skipBlockComment(src: []const u8, idx: usize) ?usize {
+    if (src[idx] != '/' or idx + 1 >= src.len or src[idx + 1] != '*') return null;
+    var i = idx + 2;
+    while (i + 1 < src.len and !(src[i] == '*' and src[i + 1] == '/')) : (i += 1) {}
+    if (i + 1 < src.len) return i + 2;
+    return src.len;
+}
+
+fn skipHashComment(src: []const u8, idx: usize) ?usize {
+    if (src[idx] != '#') return null;
+    var i = idx + 1;
+    while (i < src.len and src[i] != '\n') : (i += 1) {}
+    return i;
+}
+
+fn skipRawString(src: []const u8, idx: usize) ?usize {
+    if (src[idx] != 'r' or idx + 1 >= src.len) return null;
+    var h: usize = 0;
+    var p = idx + 1;
+    while (p < src.len and src[p] == '#') : (p += 1) {
+        h += 1;
+    }
+    if (p >= src.len) return null;
+    if (!(src[p] == '"' or (h == 0 and src[p] == '\''))) return null;
+    const quote = src[p];
+    var i = p + 1;
+    while (i < src.len) {
+        if (src[i] == quote) {
+            var matched = true;
+            if (i + 1 + h > src.len) {
+                matched = false;
+            } else {
+                for (0..h) |k| {
+                    if (src[i + 1 + k] != '#') {
+                        matched = false;
+                        break;
+                    }
+                }
+            }
+            if (matched) return i + 1 + h;
+        }
+        i += 1;
+    }
+    return src.len;
+}
+
+fn skipVerbatimString(src: []const u8, idx: usize) ?usize {
+    if (src[idx] != '@' or idx + 1 >= src.len or src[idx + 1] != '"') return null;
+    var i = idx + 2;
+    while (i < src.len) {
+        if (src[i] == '"') {
+            if (i + 1 < src.len and src[i + 1] == '"') {
+                i += 2;
+                continue;
+            }
+            return i + 1;
+        }
+        i += 1;
+    }
+    return src.len;
+}
+
+fn skipBacktickString(src: []const u8, idx: usize) ?usize {
+    if (src[idx] != '`') return null;
+    var i = idx + 1;
+    while (i < src.len and src[i] != '`') {
+        if (src[i] == '\\' and i + 1 < src.len) {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    if (i < src.len) return i + 1;
+    return src.len;
+}
+
+fn skipQuotedString(src: []const u8, idx: usize) ?usize {
+    if (src[idx] != '"' and src[idx] != '\'') return null;
+    const quote = src[idx];
+    var i = idx + 1;
+    while (i < src.len and src[i] != quote) {
+        if (src[i] == '\\' and i + 1 < src.len) {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    if (i < src.len) return i + 1;
+    return src.len;
 }
 
 
