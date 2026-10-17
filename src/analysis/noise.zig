@@ -234,28 +234,32 @@ fn isRedundantTernary(node: bindings.TSNode, source: []const u8, lang: grammars.
 fn unwrapRustBlock(node: bindings.TSNode) bindings.TSNode {
     if (node.isNull()) return node;
     const t = node.getType();
-    if (std.mem.eql(u8, t, "else_clause")) {
-        const alt = node.childByFieldName("alternative");
-        if (!alt.isNull()) return unwrapRustBlock(alt);
-        var i: u32 = 0;
-        while (i < node.namedChildCount()) : (i += 1) {
-            const ch = node.namedChild(i);
-            if (std.mem.eql(u8, ch.getType(), "block") or std.mem.eql(u8, ch.getType(), "if_expression")) {
-                return unwrapRustBlock(ch);
-            }
+    if (std.mem.eql(u8, t, "else_clause")) return unwrapRustElseClause(node);
+    if (std.mem.eql(u8, t, "block")) return unwrapRustBlockNode(node);
+    return node;
+}
+
+fn unwrapRustElseClause(node: bindings.TSNode) bindings.TSNode {
+    const alt = node.childByFieldName("alternative");
+    if (!alt.isNull()) return unwrapRustBlock(alt);
+    var i: u32 = 0;
+    while (i < node.namedChildCount()) : (i += 1) {
+        const ch = node.namedChild(i);
+        if (std.mem.eql(u8, ch.getType(), "block") or std.mem.eql(u8, ch.getType(), "if_expression")) {
+            return unwrapRustBlock(ch);
         }
-    } else if (std.mem.eql(u8, t, "block")) {
-        if (node.namedChildCount() == 1) {
-            return unwrapRustBlock(node.namedChild(0));
-        }
-        if (node.namedChildCount() > 0) {
-            const last = node.namedChild(node.namedChildCount() - 1);
-            if (std.mem.eql(u8, last.getType(), "expression_statement")) {
-                if (last.namedChildCount() == 1) {
-                    return unwrapRustBlock(last.namedChild(0));
-                }
-            }
-        }
+    }
+    return node;
+}
+
+fn unwrapRustBlockNode(node: bindings.TSNode) bindings.TSNode {
+    if (node.namedChildCount() == 1) {
+        return unwrapRustBlock(node.namedChild(0));
+    }
+    if (node.namedChildCount() == 0) return node;
+    const last = node.namedChild(node.namedChildCount() - 1);
+    if (std.mem.eql(u8, last.getType(), "expression_statement") and last.namedChildCount() == 1) {
+        return unwrapRustBlock(last.namedChild(0));
     }
     return node;
 }
