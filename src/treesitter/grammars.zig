@@ -8,6 +8,7 @@ pub const Language = enum {
     typescript,
     tsx,
     c_sharp,
+    zig,
     unknown,
 
     pub fn getTsLanguage(self: Language) ?*const bindings.TSLanguage {
@@ -193,7 +194,7 @@ fn isIfOrWhileType(node_type: []const u8, lang: Language) bool {
         .python => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "elif_clause") or std.mem.eql(u8, node_type, "while_statement"),
         .typescript, .tsx => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "while_statement") or std.mem.eql(u8, node_type, "do_statement"),
         .c_sharp => std.mem.eql(u8, node_type, "if_statement") or std.mem.eql(u8, node_type, "while_statement") or std.mem.eql(u8, node_type, "do_statement"),
-        .unknown => false,
+        .zig, .unknown => false,
     };
 }
 
@@ -292,6 +293,12 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .extensions = &.{".cs"},
         .names = &.{ "csharp", "cs", "c_sharp" },
         .ts_language_loader = bindings.tree_sitter_c_sharp,
+    },
+    // zig
+    .{
+        .extensions = &.{".zig"},
+        .names = &.{ "zig", "ziglang" },
+        .ts_language_loader = null,
     },
     // unknown
     .{},
