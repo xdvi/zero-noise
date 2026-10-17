@@ -12,8 +12,7 @@ pub const Language = enum {
     unknown,
 
     pub fn getTsLanguage(self: Language) ?*const bindings.TSLanguage {
-        const loader = specFor(self).ts_language_loader orelse return null;
-        return loader();
+        return loadGrammarLanguage(self);
     }
 
     pub fn fromExtension(ext: []const u8) Language {
@@ -212,7 +211,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{},
         .extensions = &.{".go"},
         .names = &.{"go"},
-        .ts_language_loader = bindings.tree_sitter_go,
+        .ts_language_loader = null,
     },
     // rust
     .{
@@ -228,7 +227,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{},
         .extensions = &.{".rs"},
         .names = &.{ "rust", "rs" },
-        .ts_language_loader = bindings.tree_sitter_rust,
+        .ts_language_loader = null,
     },
     // python
     .{
@@ -244,7 +243,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{ "except_clause", "except_group_clause" },
         .extensions = &.{".py"},
         .names = &.{ "python", "py" },
-        .ts_language_loader = bindings.tree_sitter_python,
+        .ts_language_loader = null,
     },
     // typescript
     .{
@@ -260,7 +259,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{"catch_clause"},
         .extensions = &.{ ".ts", ".js" },
         .names = &.{ "typescript", "ts", "javascript", "js" },
-        .ts_language_loader = bindings.tree_sitter_typescript,
+        .ts_language_loader = null,
     },
     // tsx
     .{
@@ -276,7 +275,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{"catch_clause"},
         .extensions = &.{ ".tsx", ".jsx" },
         .names = &.{"tsx"},
-        .ts_language_loader = bindings.tree_sitter_tsx,
+        .ts_language_loader = null,
     },
     // c_sharp
     .{
@@ -292,7 +291,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{"catch_clause"},
         .extensions = &.{".cs"},
         .names = &.{ "csharp", "cs", "c_sharp" },
-        .ts_language_loader = bindings.tree_sitter_c_sharp,
+        .ts_language_loader = null,
     },
     // zig
     .{
@@ -307,7 +306,7 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
         .catch_nodes = &.{"catch_expression"},
         .extensions = &.{".zig"},
         .names = &.{ "zig", "ziglang" },
-        .ts_language_loader = bindings.tree_sitter_zig,
+        .ts_language_loader = null,
     },
     // unknown
     .{},
@@ -469,4 +468,108 @@ test "isFunctionNode recognizes variable_declarator with arrow_function and func
     try std.testing.expect(found_expr);
     try std.testing.expect(!found_regular_var_as_fn);
     try std.testing.expect(found_decl);
+}
+
+const GrammarHandle = struct {
+    lang: Language,
+    lib: std.DynLib,
+    ts_language: *const bindings.TSLanguage,
+};
+
+var grammar_handles: std.ArrayList(GrammarHandle) = .empty;
+const grammar_allocator = std.heap.page_allocator;
+
+fn grammarLibraryName(lang: Language) ?[]const u8 {
+    return switch (lang) {
+        .go => "tree-sitter-go",
+        .rust => "tree-sitter-rust",
+        .python => "tree-sitter-python",
+        .typescript => "tree-sitter-typescript",
+        .tsx => "tree-sitter-tsx",
+        .c_sharp => "tree-sitter-c_sharp",
+        .zig => "tree-sitter-zig",
+        .unknown => null,
+    };
+}
+
+fn grammarSymbolName(lang: Language) ?[:0]const u8 {
+    return switch (lang) {
+        .go => "tree_sitter_go",
+        .rust => "tree_sitter_rust",
+        .python => "tree_sitter_python",
+        .typescript => "tree_sitter_typescript",
+        .tsx => "tree_sitter_tsx",
+        .c_sharp => "tree_sitter_c_sharp",
+        .zig => "tree_sitter_zig",
+        .unknown => null,
+    };
+}
+
+fn loadGrammarLanguage(lang: Language) ?*const bindings.TSLanguage {
+    if (lang == .unknown) return null;
+
+    // Check cache
+    for (grammar_handles.items) |h| {
+        if (h.lang == lang) return h.ts_language;
+    }
+
+    const lib_name = grammarLibraryName(lang) orelse return null;
+    const sym_name = grammarSymbolName(lang) orelse return null;
+
+    // Candidate paths
+    var paths: [4][]const u8 = undefined;
+    var path_count: usize = 0;
+    // Relative to cwd (dev)
+    const dev_path = std.fmt.allocPrint(grammar_allocator, "zig-out/lib/lib{s}.so", .{lib_name}) catch return null;
+    paths[path_count] = dev_path;
+    path_count += 1;
+    // System
+    const sys_path = std.fmt.allocPrint(grammar_allocator, "/usr/lib/lib{s}.so", .{lib_name}) catch return null;
+    paths[path_count] = sys_path;
+    path_count += 1;
+    const sys_path2 = std.fmt.allocPrint(grammar_allocator, "/usr/local/lib/lib{s}.so", .{lib_name}) catch return null;
+    paths[path_count] = sys_path2;
+    path_count += 1;
+
+    var loaded: ?std.DynLib = null;
+    var chosen_path: ?[]const u8 = null;
+    for (paths[0..path_count]) |p| {
+        if (std.DynLib.open(p)) |lib| {
+            loaded = lib;
+            chosen_path = p;
+            break;
+        } else |_| {}
+    }
+
+    // Free unused path strings
+    for (paths[0..path_count]) |p| {
+        if (chosen_path == null or p.ptr != chosen_path.?.ptr) {
+            grammar_allocator.free(p);
+        }
+    }
+
+    var lib = loaded orelse return null;
+    const sym = lib.lookup(*const fn () callconv(.c) ?*const bindings.TSLanguage, sym_name) orelse {
+        lib.close();
+        if (chosen_path) |p| grammar_allocator.free(p);
+        return null;
+    };
+    const ts_lang = sym() orelse {
+        lib.close();
+        if (chosen_path) |p| grammar_allocator.free(p);
+        return null;
+    };
+
+    grammar_handles.append(grammar_allocator, .{
+        .lang = lang,
+        .lib = lib,
+        .ts_language = ts_lang,
+    }) catch {
+        lib.close();
+        if (chosen_path) |p| grammar_allocator.free(p);
+        return null;
+    };
+
+    if (chosen_path) |p| grammar_allocator.free(p);
+    return ts_lang;
 }
