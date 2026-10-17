@@ -20,15 +20,27 @@ pub const RefactorStatus = enum {
     }
 };
 
-pub const SafeRefactorOptions = struct {
-    filepath: []const u8,
+pub const HashLock = struct {
     expected_hash: ?[]const u8 = null,
+};
+
+pub const TestRun = struct {
     test_cmd: ?[]const u8 = null,
-    fix: bool = true,
+    timeout_ms: u32 = 60_000,
+};
+
+pub const PatchSource = struct {
     candidate_content: ?[]const u8 = null,
     patch_file: ?[]const u8 = null,
     patch_content: ?[]const u8 = null,
-    timeout_ms: u32 = 60_000,
+};
+
+pub const SafeRefactorOptions = struct {
+    filepath: []const u8,
+    hash: HashLock = .{},
+    test_run: TestRun = .{},
+    patch: PatchSource = .{},
+    fix: bool = true,
 };
 
 pub const SafeRefactorResult = struct {
@@ -183,7 +195,7 @@ pub fn executeSafeRefactor(
 
     const actual_hash_buf = std.fmt.bytesToHex(digest, .lower);
 
-    if (options.expected_hash) |exp_hash| {
+    if (options.hash.expected_hash) |exp_hash| {
         const trimmed_expected = std.mem.trim(u8, exp_hash, " \t\r\n");
         if (!std.ascii.eqlIgnoreCase(trimmed_expected, &actual_hash_buf)) {
             const err_msg = try std.fmt.allocPrint(
@@ -199,11 +211,11 @@ pub fn executeSafeRefactor(
         }
     }
 
-    const candidate = if (options.candidate_content) |c|
+    const candidate = if (options.patch.candidate_content) |c|
         try allocator.dupe(u8, c)
-    else if (options.patch_content) |pc|
+    else if (options.patch.patch_content) |pc|
         try applyPatch(allocator, original_content, pc)
-    else if (options.patch_file) |pf| blk: {
+    else if (options.patch.patch_file) |pf| blk: {
         const patch_data = try readFileAlloc(allocator, pf);
         defer allocator.free(patch_data);
         break :blk try applyPatch(allocator, original_content, patch_data);
@@ -297,8 +309,8 @@ pub fn executeSafeRefactor(
         };
     }
 
-    if (options.test_cmd) |test_cmd| {
-        const test_ok = runTestCommandWithTimeout(allocator, test_cmd, options.timeout_ms) catch |err| switch (err) {
+    if (options.test_run.test_cmd) |test_cmd| {
+        const test_ok = runTestCommandWithTimeout(allocator, test_cmd, options.test_run.timeout_ms) catch |err| switch (err) {
             error.TestTimeout => {
                 _ = atomicRename(backup_path_z, target_path_z);
                 return SafeRefactorResult{
@@ -679,7 +691,7 @@ test "state lock aborts on hash mismatch" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .expected_hash = "0000000000000000000000000000000000000000000000000000000000000000",
+        .hash = .{ .expected_hash = "0000000000000000000000000000000000000000000000000000000000000000" },
         .fix = true,
     });
     var res = result;
@@ -705,7 +717,7 @@ test "state lock succeeds on matching hash" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .expected_hash = &valid_hash,
+        .hash = .{ .expected_hash = &valid_hash },
         .fix = true,
     });
     var res = result;
@@ -750,7 +762,7 @@ test "syntax validation rolls back broken candidate" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .candidate_content = broken_candidate,
+        .patch = .{ .candidate_content = broken_candidate },
         .fix = true,
     });
     var res = result;
@@ -773,7 +785,7 @@ test "successful safe refactor with test command" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .test_cmd = "exit 0",
+        .test_run = .{ .test_cmd = "exit 0" },
         .fix = true,
     });
     var res = result;
@@ -795,7 +807,7 @@ test "failing test command rolls back file" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .test_cmd = "exit 1",
+        .test_run = .{ .test_cmd = "exit 1" },
         .fix = true,
     });
     var res = result;
@@ -832,8 +844,8 @@ test "test command timeout rolls back file and kills child" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .test_cmd = "sleep 10",
-        .timeout_ms = 50,
+        .test_run = .{ .test_cmd = "sleep 10", .timeout_ms = 50 },
+
         .fix = true,
     });
     var res = result;
@@ -882,7 +894,7 @@ test "syntax validation delta allows pre-existing syntax errors" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .candidate_content = candidate,
+        .patch = .{ .candidate_content = candidate },
         .fix = true,
     });
     var res = result;
@@ -902,7 +914,7 @@ test "syntax validation delta rejects candidate introducing NEW syntax errors" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .candidate_content = broken_candidate,
+        .patch = .{ .candidate_content = broken_candidate },
         .fix = true,
     });
     var res = result;
@@ -1013,7 +1025,7 @@ test "executeSafeRefactor with patch_file" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = target,
-        .patch_file = patch_target,
+        .patch = .{ .patch_file = patch_target },
         .fix = true,
     });
     var res = result;

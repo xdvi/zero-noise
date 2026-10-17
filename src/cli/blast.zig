@@ -1,5 +1,5 @@
 const std = @import("std");
-const server = @import("../mcp/server.zig");
+const app = @import("../mcp/app.zig");
 
 pub fn run(allocator: std.mem.Allocator, args: []const []const u8, io: std.Io, stdout: std.Io.File, stderr: std.Io.File) !u8 {
     var out_list: std.ArrayList(u8) = .empty;
@@ -43,7 +43,7 @@ pub fn executeBlast(allocator: std.mem.Allocator, args: []const []const u8, out_
     try json_args.object.put(allocator, "format", std.json.Value{ .string = format });
 
 
-    const res = try server.executeToolCall(allocator, "blast_radius", json_args);
+    const res = try app.executeToolCall(allocator, "blast_radius", json_args);
     defer res.deinit(allocator);
 
     try out_list.appendSlice(allocator, res.text);

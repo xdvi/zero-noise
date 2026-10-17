@@ -25,6 +25,7 @@ pub const mcp = struct {
     pub const protocol = @import("mcp/protocol.zig");
     pub const compact = @import("mcp/compact.zig");
     pub const server = @import("mcp/server.zig");
+    pub const app = @import("mcp/app.zig");
 };
 
 pub const cli = struct {

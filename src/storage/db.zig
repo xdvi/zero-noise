@@ -203,13 +203,22 @@ pub const Database = struct {
     }
 };
 
-pub fn openProjectDb(allocator: std.mem.Allocator, root_path: []const u8) !Database {
+pub const DbPaths = struct {
+    dir_path: []u8,
+    db_path: [:0]u8,
+
+    pub fn deinit(self: DbPaths, allocator: std.mem.Allocator) void {
+        allocator.free(self.dir_path);
+        allocator.free(self.db_path);
+    }
+};
+
+fn resolveDbPaths(allocator: std.mem.Allocator, root_path: []const u8) !DbPaths {
     const clean_root = std.mem.trimEnd(u8, root_path, "/\\");
     const dir_path = if (clean_root.len == 0 or std.mem.eql(u8, clean_root, "."))
         try allocator.dupe(u8, ".zero-noise")
     else
         try std.fmt.allocPrint(allocator, "{s}/.zero-noise", .{clean_root});
-    defer allocator.free(dir_path);
 
     const db_path_str = if (clean_root.len == 0 or std.mem.eql(u8, clean_root, "."))
         try allocator.dupe(u8, ".zero-noise/state.db")
@@ -218,12 +227,17 @@ pub fn openProjectDb(allocator: std.mem.Allocator, root_path: []const u8) !Datab
     defer allocator.free(db_path_str);
 
     const db_path = try allocator.dupeSentinel(u8, db_path_str, 0);
-    defer allocator.free(db_path);
+    return .{ .dir_path = dir_path, .db_path = db_path };
+}
+
+pub fn openProjectDb(allocator: std.mem.Allocator, root_path: []const u8) !Database {
+    const paths = try resolveDbPaths(allocator, root_path);
+    defer paths.deinit(allocator);
 
     const io = std.Options.debug_io;
-    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+    std.Io.Dir.cwd().createDirPath(io, paths.dir_path) catch {};
 
-    return Database.open(db_path.ptr);
+    return Database.open(paths.db_path.ptr);
 }
 
 test "database init and file cache" {
@@ -249,25 +263,12 @@ test "database init and file cache" {
 }
 
 pub fn bootstrap(allocator: std.mem.Allocator, io: std.Io, root_path: []const u8) !void {
-    const clean_root = std.mem.trimEnd(u8, root_path, "/\\");
-    const dir_path = if (clean_root.len == 0 or std.mem.eql(u8, clean_root, "."))
-        try allocator.dupe(u8, ".zero-noise")
-    else
-        try std.fmt.allocPrint(allocator, "{s}/.zero-noise", .{clean_root});
-    defer allocator.free(dir_path);
+    const paths = try resolveDbPaths(allocator, root_path);
+    defer paths.deinit(allocator);
 
-    const db_path_str = if (clean_root.len == 0 or std.mem.eql(u8, clean_root, "."))
-        try allocator.dupe(u8, ".zero-noise/state.db")
-    else
-        try std.fmt.allocPrint(allocator, "{s}/.zero-noise/state.db", .{clean_root});
-    defer allocator.free(db_path_str);
+    std.Io.Dir.cwd().createDirPath(io, paths.dir_path) catch {};
 
-    const db_path = try allocator.dupeSentinel(u8, db_path_str, 0);
-    defer allocator.free(db_path);
-
-    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
-
-    var db = try Database.open(db_path.ptr);
+    var db = try Database.open(paths.db_path.ptr);
     db.close();
 }
 
