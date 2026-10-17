@@ -20,6 +20,11 @@ pub fn calculateComplexity(
 ) ![]FunctionRecord {
     const ts_lang = lang.getTsLanguage() orelse return &.{};
 
+    const cache_key = CacheKey{ .lang = lang, .hash = std.hash.Wyhash.hash(0, source) };
+    if (lookupComplexityCache(allocator, cache_key)) |cached| {
+        return cached;
+    }
+
     var parser = try bindings.Parser.init();
     defer parser.deinit();
 
@@ -34,7 +39,64 @@ pub fn calculateComplexity(
 
     try collectFunctions(allocator, root, source, lang, &records);
 
-    return records.toOwnedSlice(allocator);
+    const owned = try records.toOwnedSlice(allocator);
+    try storeComplexityCache(cache_key, owned);
+    const cloned = try cloneComplexityRecords(allocator, owned);
+    // free owned (names owned)
+    for (owned) |r| allocator.free(r.name);
+    allocator.free(owned);
+    return cloned;
+}
+
+const CacheKey = struct { lang: grammars.Language, hash: u64 };
+
+var complexity_cache_key: ?CacheKey = null;
+var complexity_cache_value: []FunctionRecord = &.{};
+
+fn lookupComplexityCache(allocator: std.mem.Allocator, key: CacheKey) ?[]FunctionRecord {
+    if (complexity_cache_key) |k| {
+        if (k.lang == key.lang and k.hash == key.hash) {
+            return cloneComplexityRecords(allocator, complexity_cache_value) catch null;
+        }
+    }
+    return null;
+}
+
+fn storeComplexityCache(key: CacheKey, value: []const FunctionRecord) !void {
+    // Free previous cached value (names owned).
+    for (complexity_cache_value) |r| {
+        std.heap.page_allocator.free(r.name);
+    }
+    if (complexity_cache_value.len > 0) {
+        std.heap.page_allocator.free(complexity_cache_value);
+    }
+
+    const cached = try std.heap.page_allocator.alloc(FunctionRecord, value.len);
+    errdefer std.heap.page_allocator.free(cached);
+    for (value, 0..) |r, i| {
+        cached[i] = .{
+            .name = try std.heap.page_allocator.dupe(u8, r.name),
+            .line = r.line,
+            .end_line = r.end_line,
+            .complexity = r.complexity,
+        };
+    }
+    complexity_cache_value = cached;
+    complexity_cache_key = key;
+}
+
+fn cloneComplexityRecords(allocator: std.mem.Allocator, src: []const FunctionRecord) ![]FunctionRecord {
+    const out = try allocator.alloc(FunctionRecord, src.len);
+    errdefer allocator.free(out);
+    for (src, 0..) |r, i| {
+        out[i] = .{
+            .name = try allocator.dupe(u8, r.name),
+            .line = r.line,
+            .end_line = r.end_line,
+            .complexity = r.complexity,
+        };
+    }
+    return out;
 }
 
 fn collectFunctions(

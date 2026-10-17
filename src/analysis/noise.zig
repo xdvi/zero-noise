@@ -51,6 +51,11 @@ pub fn auditNoiseWithOptions(
 ) ![]NoiseFinding {
     const ts_lang = lang.getTsLanguage() orelse return &.{};
 
+    const cache_key = NoiseCacheKey{ .lang = lang, .hash = std.hash.Wyhash.hash(0, source), .max_nesting = config.max_nesting, .max_closure_len = config.max_closure_len };
+    if (lookupNoiseCache(allocator, cache_key)) |cached| {
+        return cached;
+    }
+
     var parser = try bindings.Parser.init();
     defer parser.deinit();
 
@@ -77,7 +82,11 @@ pub fn auditNoiseWithOptions(
     // 3. Scan commented-out code blocks
     try collectCommentedCode(allocator, root, source, &findings);
 
-    return findings.toOwnedSlice(allocator);
+    const owned = try findings.toOwnedSlice(allocator);
+    try storeNoiseCache(cache_key, owned);
+    const cloned = try cloneNoiseFindings(allocator, owned);
+    deinitFindings(allocator, owned);
+    return cloned;
 }
 
 pub fn deinitFindings(allocator: std.mem.Allocator, findings: []NoiseFinding) void {
@@ -1270,4 +1279,57 @@ fn resolveRustTernaryNodes(node: bindings.TSNode, cons_node: *bindings.TSNode, a
 fn resolveDefaultTernaryNodes(node: bindings.TSNode, cons_node: *bindings.TSNode, alt_node: *bindings.TSNode) void {
     cons_node.* = node.childByFieldName("consequence");
     alt_node.* = node.childByFieldName("alternative");
+}
+
+const NoiseCacheKey = struct { lang: grammars.Language, hash: u64, max_nesting: u32, max_closure_len: u32 };
+
+var noise_cache_key: ?NoiseCacheKey = null;
+var noise_cache_value: []NoiseFinding = &.{};
+
+fn lookupNoiseCache(allocator: std.mem.Allocator, key: NoiseCacheKey) ?[]NoiseFinding {
+    if (noise_cache_key) |k| {
+        if (k.lang == key.lang and k.hash == key.hash and k.max_nesting == key.max_nesting and k.max_closure_len == key.max_closure_len) {
+            return cloneNoiseFindings(allocator, noise_cache_value) catch null;
+        }
+    }
+    return null;
+}
+
+fn storeNoiseCache(key: NoiseCacheKey, value: []const NoiseFinding) !void {
+    // Free previous
+    deinitNoiseCacheValue(noise_cache_value);
+    const cached = try std.heap.page_allocator.alloc(NoiseFinding, value.len);
+    errdefer std.heap.page_allocator.free(cached);
+    for (value, 0..) |f, i| {
+        cached[i] = f;
+        if (f.rule == .repeated_literal) {
+            cached[i].message = try std.heap.page_allocator.dupe(u8, f.message);
+            cached[i].snippet = try std.heap.page_allocator.dupe(u8, f.snippet);
+        }
+    }
+    noise_cache_value = cached;
+    noise_cache_key = key;
+}
+
+fn deinitNoiseCacheValue(value: []NoiseFinding) void {
+    for (value) |f| {
+        if (f.rule == .repeated_literal) {
+            std.heap.page_allocator.free(f.message);
+            std.heap.page_allocator.free(f.snippet);
+        }
+    }
+    if (value.len > 0) std.heap.page_allocator.free(value);
+}
+
+fn cloneNoiseFindings(allocator: std.mem.Allocator, src: []const NoiseFinding) ![]NoiseFinding {
+    const out = try allocator.alloc(NoiseFinding, src.len);
+    errdefer allocator.free(out);
+    for (src, 0..) |f, i| {
+        out[i] = f;
+        if (f.rule == .repeated_literal) {
+            out[i].message = try allocator.dupe(u8, f.message);
+            out[i].snippet = try allocator.dupe(u8, f.snippet);
+        }
+    }
+    return out;
 }
