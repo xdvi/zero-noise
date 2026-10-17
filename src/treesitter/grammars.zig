@@ -296,9 +296,18 @@ pub const language_specs: [@typeInfo(Language).@"enum".field_names.len]LanguageS
     },
     // zig
     .{
+        .function_nodes = &.{"function_declaration"},
+        .control_nodes = &.{ "if_statement", "if_expression", "for_statement", "for_expression", "while_statement", "while_expression", "switch_expression", "catch_expression" },
+        .closure_nodes = &.{},
+        .ternary_nodes = &.{},
+        .ternary_type_nodes = &.{},
+        .if_nodes = &.{ "if_statement", "if_expression" },
+        .loop_nodes = &.{ "for_statement", "for_expression", "while_statement", "while_expression" },
+        .switch_nodes = &.{"switch_expression"},
+        .catch_nodes = &.{"catch_expression"},
         .extensions = &.{".zig"},
         .names = &.{ "zig", "ziglang" },
-        .ts_language_loader = null,
+        .ts_language_loader = bindings.tree_sitter_zig,
     },
     // unknown
     .{},

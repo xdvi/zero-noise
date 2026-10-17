@@ -42,6 +42,7 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("c/vendor/grammars/typescript/typescript/src"));
     mod.addIncludePath(b.path("c/vendor/grammars/typescript/tsx/src"));
     mod.addIncludePath(b.path("c/vendor/grammars/c_sharp/src"));
+    mod.addIncludePath(b.path("c/vendor/grammars/zig/src"));
 
     const c_sources: []const []const u8 = &.{
         "c/sqlite3.c",
@@ -57,6 +58,7 @@ pub fn build(b: *std.Build) void {
         "c/vendor/grammars/typescript/tsx/src/scanner.c",
         "c/vendor/grammars/c_sharp/src/parser.c",
         "c/vendor/grammars/c_sharp/src/scanner.c",
+        "c/vendor/grammars/zig/src/parser.c",
     };
 
     for (c_sources) |src| {

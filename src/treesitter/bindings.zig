@@ -178,6 +178,7 @@ pub extern "c" fn tree_sitter_python() ?*const TSLanguage;
 pub extern "c" fn tree_sitter_typescript() ?*const TSLanguage;
 pub extern "c" fn tree_sitter_tsx() ?*const TSLanguage;
 pub extern "c" fn tree_sitter_c_sharp() ?*const TSLanguage;
+pub extern "c" fn tree_sitter_zig() ?*const TSLanguage;
 
 test "tree sitter error detection" {
     var parser = try Parser.init();
