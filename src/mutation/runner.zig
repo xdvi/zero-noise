@@ -528,6 +528,7 @@ test "applyPatch supports single-line hunk header without comma" {
 }
 
 test "workspace confinement prevents symlink escape" {
+    if (comptime builtin.os.tag == .windows) return;
     const allocator = std.testing.allocator;
     const link_path = ".test_symlink_escape";
     _ = std.c.unlink(link_path);
