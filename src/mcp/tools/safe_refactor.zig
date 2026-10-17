@@ -23,18 +23,6 @@ const Args = struct {
 };
 
 fn parseArgs(args: ?std.json.Value) Args {
-    var force: bool = false;
-    var fix: bool = true;
-    if (args) |v| {
-        if (v == .object) {
-            if (v.object.get("force")) |val| {
-                if (val == .bool) force = val.bool;
-            }
-            if (v.object.get("fix")) |val| {
-                if (val == .bool) fix = val.bool;
-            }
-        }
-    }
     return .{
         .filepath = common.getStringArg(args, "filepath") orelse "",
         .format = common.getStringArg(args, "format") orelse "text",
@@ -44,8 +32,8 @@ fn parseArgs(args: ?std.json.Value) Args {
         .max_blast_risk = common.getStringArg(args, "max_blast_risk"),
         .patch_file = common.getStringArg(args, "patch_file"),
         .candidate_content = common.getStringArg(args, "candidate_content"),
-        .force = force,
-        .fix = fix,
+        .force = common.getBoolArg(args, "force", false),
+        .fix = common.getBoolArg(args, "fix", true),
     };
 }
 
@@ -97,17 +85,8 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
         }
     }
 
-    var simplified_from_deps: ?[]u8 = null;
+    const simplified_from_deps = prepareCandidate(allocator, deps, filepath, candidate_content, patch_file, target_patch);
     defer if (simplified_from_deps) |sc| allocator.free(sc);
-
-    if (candidate_content == null and patch_file == null and target_patch == null) {
-        if (deps.fs.readFileAlloc(allocator, filepath)) |original_content| {
-            defer allocator.free(original_content);
-            if (deps.simplify(allocator, original_content)) |simplified_content| {
-                simplified_from_deps = simplified_content;
-            } else |_| {}
-        } else |_| {}
-    }
 
     const effective_candidate = if (candidate_content) |cc| cc else simplified_from_deps;
 
@@ -140,6 +119,17 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
         }
     }
 
+    return formatSafeRefactorResult(allocator, filepath, format, status_str, result, expected_hash);
+}
+
+fn formatSafeRefactorResult(
+    allocator: std.mem.Allocator,
+    filepath: []const u8,
+    format: []const u8,
+    status_str: []const u8,
+    result: runner.SafeRefactorResult,
+    expected_hash: ?[]const u8,
+) !ToolResult {
     if (compact.isCompact(format)) {
         const text = try compact.formatRefactor(allocator, filepath, status_str, expected_hash orelse "unlocked", if (result.error_msg) |em| em else "safe refactor completed");
         return ToolResult{ .text = text, .is_error = (result.status == .aborted or result.status == .rolled_back) };
@@ -190,16 +180,7 @@ fn enforceBlastRisk(
     format: []const u8,
     expected_hash: ?[]const u8,
 ) !?ToolResult {
-    const allowed: ?blast.RiskLevel = if (std.mem.eql(u8, mbr, "low"))
-        .low
-    else if (std.mem.eql(u8, mbr, "medium"))
-        .medium
-    else if (std.mem.eql(u8, mbr, "high"))
-        .high
-    else
-        null;
-
-    const allowed_level = allowed orelse return null;
+    const allowed_level = parseRiskLevel(mbr) orelse return null;
 
     const target_content = deps.fs.readFileAlloc(allocator, filepath) catch return null;
     defer allocator.free(target_content);
@@ -250,4 +231,25 @@ fn enforceBlastRisk(
 
     const text = try std.fmt.allocPrint(allocator, "Safe Refactor ({s}): status aborted\nError: {s}\n", .{ filepath, err_msg });
     return ToolResult{ .text = text, .is_error = true };
+}
+
+fn parseRiskLevel(s: []const u8) ?blast.RiskLevel {
+    if (std.mem.eql(u8, s, "low")) return .low;
+    if (std.mem.eql(u8, s, "medium")) return .medium;
+    if (std.mem.eql(u8, s, "high")) return .high;
+    return null;
+}
+
+fn prepareCandidate(
+    allocator: std.mem.Allocator,
+    deps: *const deps_mod.Deps,
+    filepath: []const u8,
+    candidate_content: ?[]const u8,
+    patch_file: ?[]const u8,
+    target_patch: ?[]const u8,
+) ?[]u8 {
+    if (candidate_content != null or patch_file != null or target_patch != null) return null;
+    const original_content = deps.fs.readFileAlloc(allocator, filepath) catch return null;
+    defer allocator.free(original_content);
+    return deps.simplify(allocator, original_content) catch null;
 }

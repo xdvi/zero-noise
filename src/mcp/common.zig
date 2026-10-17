@@ -36,6 +36,17 @@ pub fn getU32Arg(args: ?std.json.Value, key: []const u8, default_val: u32) u32 {
     return default_val;
 }
 
+pub fn getBoolArg(args: ?std.json.Value, key: []const u8, default_val: bool) bool {
+    if (args) |v| {
+        if (v == .object) {
+            if (v.object.get(key)) |val| {
+                if (val == .bool) return val.bool;
+            }
+        }
+    }
+    return default_val;
+}
+
 pub fn appendJsonEscaped(list: *std.ArrayList(u8), allocator: std.mem.Allocator, str: []const u8) !void {
     try list.print(allocator, "{f}", .{std.json.fmt(str, .{})});
 }
