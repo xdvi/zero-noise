@@ -89,23 +89,7 @@ pub fn compactJson(allocator: std.mem.Allocator, input: []const u8) ![]const u8 
     var escape = false;
 
     for (input) |c| {
-        if (in_string) {
-            try out.append(allocator, c);
-            if (escape) {
-                escape = false;
-            } else if (c == '\\') {
-                escape = true;
-            } else if (c == '"') {
-                in_string = false;
-            }
-        } else {
-            if (c == '"') {
-                in_string = true;
-                try out.append(allocator, c);
-            } else if (!std.ascii.isWhitespace(c)) {
-                try out.append(allocator, c);
-            }
-        }
+        processCompactChar(allocator, c, &out, &in_string, &escape);
     }
 
     return out.toOwnedSlice(allocator);
@@ -147,4 +131,25 @@ test "compact formatting and isCompact" {
     const json_out = try compactJson(allocator, json_in);
     defer allocator.free(json_out);
     try std.testing.expectEqualStrings("{\"name\":\"zero-noise\",\"values\":[1,2,\"hello world\"]}", json_out);
+}
+
+
+fn processCompactChar(allocator: std.mem.Allocator, c: u8, out: *std.ArrayList(u8), in_string: *bool, escape: *bool) void {
+    if (in_string.*) {
+        out.append(allocator, c) catch {};
+        if (escape.*) {
+            escape.* = false;
+        } else if (c == '\\') {
+            escape.* = true;
+        } else if (c == '"') {
+            in_string.* = false;
+        }
+        return;
+    }
+    if (c == '"') {
+        in_string.* = true;
+        out.append(allocator, c) catch {};
+    } else if (!std.ascii.isWhitespace(c)) {
+        out.append(allocator, c) catch {};
+    }
 }
