@@ -86,50 +86,60 @@ fn getFunctionName(node: bindings.TSNode, source: []const u8, lang: grammars.Lan
 
     const t = node.getType();
     if (lang == .c_sharp and std.mem.eql(u8, t, "constructor_declaration")) {
-        var curr = node.parent();
-        while (!curr.isNull()) {
-            const pt = curr.getType();
-            if (std.mem.eql(u8, pt, "class_declaration") or
-                std.mem.eql(u8, pt, "struct_declaration") or
-                std.mem.eql(u8, pt, "record_declaration"))
-            {
-                const parent_name = curr.childByFieldName("name");
-                if (!parent_name.isNull()) {
-                    const s = parent_name.slice(source);
-                    if (s.len > 0) return s;
-                }
-                break;
-            }
-            curr = curr.parent();
-        }
-        return "constructor";
+        return resolveCSharpConstructorName(node, source);
     }
-
     if ((lang == .typescript or lang == .tsx) and std.mem.eql(u8, t, "method_definition")) {
-        var i: u32 = 0;
-        const count = node.childCount();
-        while (i < count) : (i += 1) {
-            const ch = node.child(i);
-            if (std.mem.eql(u8, ch.getType(), "property_identifier")) {
-                const s = ch.slice(source);
-                if (s.len > 0) return s;
-            }
-        }
-        return "constructor";
+        return resolveTypeScriptMethodName(node, source);
     }
-
     if (lang == .go and std.mem.eql(u8, t, "method_declaration")) {
-        var i: u32 = 0;
-        const count = node.childCount();
-        while (i < count) : (i += 1) {
-            const ch = node.child(i);
-            if (std.mem.eql(u8, ch.getType(), "field_identifier")) {
-                const s = ch.slice(source);
+        return resolveGoMethodName(node, source);
+    }
+    return "anonymous";
+}
+
+fn resolveCSharpConstructorName(node: bindings.TSNode, source: []const u8) []const u8 {
+    var curr = node.parent();
+    while (!curr.isNull()) {
+        const pt = curr.getType();
+        if (std.mem.eql(u8, pt, "class_declaration") or
+            std.mem.eql(u8, pt, "struct_declaration") or
+            std.mem.eql(u8, pt, "record_declaration"))
+        {
+            const parent_name = curr.childByFieldName("name");
+            if (!parent_name.isNull()) {
+                const s = parent_name.slice(source);
                 if (s.len > 0) return s;
             }
+            break;
+        }
+        curr = curr.parent();
+    }
+    return "constructor";
+}
+
+fn resolveTypeScriptMethodName(node: bindings.TSNode, source: []const u8) []const u8 {
+    var i: u32 = 0;
+    const count = node.childCount();
+    while (i < count) : (i += 1) {
+        const ch = node.child(i);
+        if (std.mem.eql(u8, ch.getType(), "property_identifier")) {
+            const s = ch.slice(source);
+            if (s.len > 0) return s;
         }
     }
+    return "constructor";
+}
 
+fn resolveGoMethodName(node: bindings.TSNode, source: []const u8) []const u8 {
+    var i: u32 = 0;
+    const count = node.childCount();
+    while (i < count) : (i += 1) {
+        const ch = node.child(i);
+        if (std.mem.eql(u8, ch.getType(), "field_identifier")) {
+            const s = ch.slice(source);
+            if (s.len > 0) return s;
+        }
+    }
     return "anonymous";
 }
 
