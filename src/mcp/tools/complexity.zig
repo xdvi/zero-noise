@@ -55,26 +55,7 @@ pub fn executeComplexityWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
     }
 
     for (files_list.items) |file_path| {
-        const lang = grammars.Language.fromPath(file_path);
-        if (lang == .unknown) continue;
-
-        const content = deps.fs.readFileAlloc(allocator, file_path) catch continue;
-        defer allocator.free(content);
-
-        const records = deps.calculateComplexity(allocator, content, lang) catch continue;
-        defer { for (records) |r| r.deinit(allocator); allocator.free(records); }
-
-        for (records) |rec| {
-            if (rec.complexity >= threshold or std.mem.eql(u8, format, "json") or std.mem.eql(u8, format, "sarif")) {
-                try all_funcs.append(allocator, .{
-                    .file = try allocator.dupe(u8, file_path),
-                    .name = try allocator.dupe(u8, rec.name),
-                    .line = rec.line,
-                    .end_line = rec.end_line,
-                    .complexity = rec.complexity,
-                });
-            }
-        }
+        try appendComplexityRecords(allocator, deps, file_path, threshold, format, &all_funcs);
     }
 
     var exceeded_count: usize = 0;
@@ -88,4 +69,34 @@ pub fn executeComplexityWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
 pub fn executeComplexity(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
     const default = deps_mod.defaultDeps();
     return executeComplexityWithDeps(allocator, args, &default);
+}
+
+fn appendComplexityRecords(
+    allocator: std.mem.Allocator,
+    deps: *const deps_mod.Deps,
+    file_path: []const u8,
+    threshold: u32,
+    format: []const u8,
+    all_funcs: *std.ArrayList(FuncItem),
+) !void {
+    const lang = grammars.Language.fromPath(file_path);
+    if (lang == .unknown) return;
+
+    const content = deps.fs.readFileAlloc(allocator, file_path) catch return;
+    defer allocator.free(content);
+
+    const records = deps.calculateComplexity(allocator, content, lang) catch return;
+    defer { for (records) |r| r.deinit(allocator); allocator.free(records); }
+
+    for (records) |rec| {
+        if (rec.complexity >= threshold or std.mem.eql(u8, format, "json") or std.mem.eql(u8, format, "sarif")) {
+            try all_funcs.append(allocator, .{
+                .file = try allocator.dupe(u8, file_path),
+                .name = try allocator.dupe(u8, rec.name),
+                .line = rec.line,
+                .end_line = rec.end_line,
+                .complexity = rec.complexity,
+            });
+        }
+    }
 }

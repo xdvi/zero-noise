@@ -46,10 +46,7 @@ pub fn executeBlastRadiusWithDeps(allocator: std.mem.Allocator, args: ?std.json.
         file_inputs.deinit(allocator);
     }
 
-    for (files_list.items) |fp| {
-        const content = deps.fs.readFileAlloc(allocator, fp) catch continue;
-        try file_inputs.append(allocator, .{ .path = fp, .content = content });
-    }
+    try loadBlastFiles(allocator, deps, &files_list, &file_inputs);
 
     var result = try deps.analyzeBlastRadius(allocator, file_inputs.items, symbol);
     defer result.deinit(allocator);
@@ -75,4 +72,16 @@ pub fn executeBlastRadiusWithDeps(allocator: std.mem.Allocator, args: ?std.json.
 pub fn executeBlastRadius(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
     const default = deps_mod.defaultDeps();
     return executeBlastRadiusWithDeps(allocator, args, &default);
+}
+
+fn loadBlastFiles(
+    allocator: std.mem.Allocator,
+    deps: *const deps_mod.Deps,
+    files_list: *std.ArrayList([]const u8),
+    file_inputs: *std.ArrayList(blast.FileInput),
+) !void {
+    for (files_list.items) |fp| {
+        const content = deps.fs.readFileAlloc(allocator, fp) catch continue;
+        try file_inputs.append(allocator, .{ .path = fp, .content = content });
+    }
 }
