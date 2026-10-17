@@ -310,22 +310,7 @@ fn isDefinitionLineSnippet(line: []const u8, symbol: []const u8, lang: grammars.
     _ = lang;
     var rest = std.mem.trim(u8, line, " \t\r");
 
-    const modifiers = [_][]const u8{
-        "export default ", "export ", "public ", "private ",    "protected ",
-        "internal ",       "static ", "async ",  "pub(crate) ", "pub(super) ",
-        "pub ",
-    };
-    var stripped = true;
-    while (stripped) {
-        stripped = false;
-        for (modifiers) |m| {
-            if (std.mem.startsWith(u8, rest, m)) {
-                rest = std.mem.trim(u8, rest[m.len..], " \t\r");
-                stripped = true;
-                break;
-            }
-        }
-    }
+    rest = stripModifiers(rest);
 
     const decl_keywords = [_][]const u8{
         "func ", "function ", "def ",  "class ", "interface ", "type ",
@@ -438,27 +423,7 @@ fn scanByLines(
         if (i == content.len or content[i] == '\n') {
             const line = content[line_start..i];
             const trimmed = std.mem.trim(u8, line, " \t\r");
-
-            // Ignore comment lines
-            if (!isCommentLine(trimmed, lang)) {
-                var search_pos: usize = 0;
-                while (std.mem.indexOfPos(u8, line, search_pos, symbol)) |idx| {
-                    if (!isInsideStringLiteral(line, idx) and isWordBoundary(line, idx, symbol.len)) {
-                        const snippet = trimmed;
-                        const is_def = isDefinitionLineSnippet(snippet, symbol, lang);
-
-                        try refs.append(allocator, .{
-                            .file = file_path,
-                            .line = line_no,
-                            .column = @intCast(idx + 1),
-                            .is_definition = is_def,
-                            .snippet = snippet,
-                        });
-                    }
-                    search_pos = idx + symbol.len;
-                }
-            }
-
+            try processScanLine(allocator, file_path, line, trimmed, symbol, lang, line_no, &refs);
             line_no += 1;
             line_start = i + 1;
         }
@@ -745,4 +710,53 @@ fn isNonDefinitionParentType(pt: []const u8) bool {
         if (std.mem.eql(u8, pt, t)) return true;
     }
     return false;
+}
+
+fn stripModifiers(rest_in: []const u8) []const u8 {
+    const modifiers = [_][]const u8{
+        "export default ", "export ", "public ", "private ",    "protected ",
+        "internal ",       "static ", "async ",  "pub(crate) ", "pub(super) ",
+        "pub ",
+    };
+    var rest = rest_in;
+    var stripped = true;
+    while (stripped) {
+        stripped = false;
+        for (modifiers) |m| {
+            if (std.mem.startsWith(u8, rest, m)) {
+                rest = std.mem.trim(u8, rest[m.len..], " \t\r");
+                stripped = true;
+                break;
+            }
+        }
+    }
+    return rest;
+}
+
+fn processScanLine(
+    allocator: std.mem.Allocator,
+    file_path: []const u8,
+    line: []const u8,
+    trimmed: []const u8,
+    symbol: []const u8,
+    lang: grammars.Language,
+    line_no: u32,
+    refs: *std.ArrayList(SymbolReference),
+) !void {
+    if (isCommentLine(trimmed, lang)) return;
+    var search_pos: usize = 0;
+    while (std.mem.indexOfPos(u8, line, search_pos, symbol)) |idx| {
+        if (!isInsideStringLiteral(line, idx) and isWordBoundary(line, idx, symbol.len)) {
+            const snippet = trimmed;
+            const is_def = isDefinitionLineSnippet(snippet, symbol, lang);
+            try refs.append(allocator, .{
+                .file = file_path,
+                .line = line_no,
+                .column = @intCast(idx + 1),
+                .is_definition = is_def,
+                .snippet = snippet,
+            });
+        }
+        search_pos = idx + symbol.len;
+    }
 }
