@@ -72,33 +72,7 @@ pub fn collectSourceFiles(allocator: std.mem.Allocator, root_path: []const u8, f
         var walker = dir.walkSelectively(allocator) catch return;
         defer walker.deinit();
 
-        while (walker.next(io) catch null) |entry| {
-            const name = entry.basename;
-            if (std.mem.startsWith(u8, name, ".") or
-                std.mem.eql(u8, name, "node_modules") or
-                std.mem.eql(u8, name, "target") or
-                std.mem.eql(u8, name, "zig-out") or
-                std.mem.eql(u8, name, "zig-cache") or
-                std.mem.eql(u8, name, "bin") or
-                std.mem.eql(u8, name, "obj"))
-            {
-                continue;
-            }
-
-            if (entry.kind == .directory) {
-                try walker.enter(io, entry);
-            } else {
-                const lang = grammars.Language.fromPath(entry.basename);
-                if (lang != .unknown) {
-                    const trimmed_root = std.mem.trimEnd(u8, root_path, "/\\");
-                    const full = if (std.mem.eql(u8, trimmed_root, "."))
-                        try allocator.dupe(u8, entry.path)
-                    else
-                        try std.fmt.allocPrint(allocator, "{s}/{s}", .{ trimmed_root, entry.path });
-                    try files_list.append(allocator, full);
-                }
-            }
-        }
+        try walkSourceEntries(allocator, io, &walker, root_path, files_list);
         return;
     } else |_| {}
 
@@ -121,3 +95,50 @@ pub const ToolResult = struct {
         allocator.free(self.text);
     }
 };
+
+fn isIgnoredEntryName(name: []const u8) bool {
+    if (std.mem.startsWith(u8, name, ".")) return true;
+    const ignored = [_][]const u8{ "node_modules", "target", "zig-out", "zig-cache", "bin", "obj" };
+    for (ignored) |item| {
+        if (std.mem.eql(u8, name, item)) return true;
+    }
+    return false;
+}
+
+fn buildSourcePath(allocator: std.mem.Allocator, root_path: []const u8, entry_path: []const u8) ![]u8 {
+    const trimmed_root = std.mem.trimEnd(u8, root_path, "/\\");
+    if (std.mem.eql(u8, trimmed_root, ".")) {
+        return allocator.dupe(u8, entry_path);
+    }
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ trimmed_root, entry_path });
+}
+
+fn appendSourceFile(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    basename: []const u8,
+    entry_path: []const u8,
+    files_list: *std.ArrayList([]const u8),
+) !void {
+    const lang = grammars.Language.fromPath(basename);
+    if (lang == .unknown) return;
+    const full = try buildSourcePath(allocator, root_path, entry_path);
+    try files_list.append(allocator, full);
+}
+
+fn walkSourceEntries(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    walker: *std.Io.Dir.SelectiveWalker,
+    root_path: []const u8,
+    files_list: *std.ArrayList([]const u8),
+) !void {
+    while (walker.next(io) catch null) |entry| {
+        if (isIgnoredEntryName(entry.basename)) continue;
+        if (entry.kind == .directory) {
+            try walker.enter(io, entry);
+            continue;
+        }
+        try appendSourceFile(allocator, root_path, entry.basename, entry.path, files_list);
+    }
+}
