@@ -20,11 +20,6 @@ pub fn calculateComplexity(
 ) ![]FunctionRecord {
     const ts_lang = lang.getTsLanguage() orelse return &.{};
 
-    const cache_key = CacheKey{ .lang = lang, .hash = std.hash.Wyhash.hash(0, source) };
-    if (lookupComplexityCache(allocator, cache_key)) |cached| {
-        return cached;
-    }
-
     var parser = try bindings.getThreadParser();
     if (!parser.setLanguage(ts_lang)) return error.SetLanguageFailed;
 
@@ -37,103 +32,56 @@ pub fn calculateComplexity(
 
     try collectFunctions(allocator, root, source, lang, &records);
 
-    const owned = try records.toOwnedSlice(allocator);
-    try storeComplexityCache(cache_key, owned);
-    const cloned = try cloneComplexityRecords(allocator, owned);
-    // free owned (names owned)
-    for (owned) |r| allocator.free(r.name);
-    allocator.free(owned);
-    return cloned;
-}
-
-const CacheKey = struct { lang: grammars.Language, hash: u64 };
-
-var complexity_cache_key: ?CacheKey = null;
-var complexity_cache_value: []FunctionRecord = &.{};
-
-fn lookupComplexityCache(allocator: std.mem.Allocator, key: CacheKey) ?[]FunctionRecord {
-    if (complexity_cache_key) |k| {
-        if (k.lang == key.lang and k.hash == key.hash) {
-            return cloneComplexityRecords(allocator, complexity_cache_value) catch null;
-        }
-    }
-    return null;
-}
-
-fn storeComplexityCache(key: CacheKey, value: []const FunctionRecord) !void {
-    // Free previous cached value (names owned).
-    for (complexity_cache_value) |r| {
-        std.heap.page_allocator.free(r.name);
-    }
-    if (complexity_cache_value.len > 0) {
-        std.heap.page_allocator.free(complexity_cache_value);
-    }
-
-    const cached = try std.heap.page_allocator.alloc(FunctionRecord, value.len);
-    errdefer std.heap.page_allocator.free(cached);
-    for (value, 0..) |r, i| {
-        cached[i] = .{
-            .name = try std.heap.page_allocator.dupe(u8, r.name),
-            .line = r.line,
-            .end_line = r.end_line,
-            .complexity = r.complexity,
-        };
-    }
-    complexity_cache_value = cached;
-    complexity_cache_key = key;
-}
-
-fn cloneComplexityRecords(allocator: std.mem.Allocator, src: []const FunctionRecord) ![]FunctionRecord {
-    const out = try allocator.alloc(FunctionRecord, src.len);
-    errdefer allocator.free(out);
-    for (src, 0..) |r, i| {
-        out[i] = .{
-            .name = try allocator.dupe(u8, r.name),
-            .line = r.line,
-            .end_line = r.end_line,
-            .complexity = r.complexity,
-        };
-    }
-    return out;
+    return records.toOwnedSlice(allocator);
 }
 
 fn collectFunctions(
     allocator: std.mem.Allocator,
-    node: bindings.TSNode,
+    root: bindings.TSNode,
     source: []const u8,
     lang: grammars.Language,
     records: *std.ArrayList(FunctionRecord),
 ) !void {
-    if (node.isNull()) return;
+    if (root.isNull()) return;
 
-    if (lang.isFunctionNode(node)) {
-        const name = getFunctionName(node, source, lang);
-        const start = node.startPoint();
-        const end = node.endPoint();
+    var cursor = root.treeCursor();
+    defer cursor.deinit();
 
-        var score: u32 = 0;
-        walkNode(node, source, lang, 0, &score, true);
+    while (true) {
+        const node = cursor.currentNode();
 
-        try records.append(allocator, .{
-            .name = try allocator.dupe(u8, name),
-            .line = start.row + 1,
-            .end_line = end.row + 1,
-            .complexity = score,
-        });
+        if (lang.isFunctionNode(node)) {
+            const name = getFunctionName(node, source, lang);
+            const start = node.startPoint();
+            const end = node.endPoint();
 
-        // Continue into children to find any inner/nested functions
-        var i: u32 = 0;
-        const count = node.childCount();
-        while (i < count) : (i += 1) {
-            try collectFunctions(allocator, node.child(i), source, lang, records);
+            var score: u32 = 0;
+            walkNode(node, source, lang, 0, &score, true);
+
+            try records.append(allocator, .{
+                .name = try allocator.dupe(u8, name),
+                .line = start.row + 1,
+                .end_line = end.row + 1,
+                .complexity = score,
+            });
         }
-        return;
-    }
 
-    var i: u32 = 0;
-    const count = node.childCount();
-    while (i < count) : (i += 1) {
-        try collectFunctions(allocator, node.child(i), source, lang, records);
+        if (cursor.gotoFirstChild()) {
+            continue;
+        }
+
+        if (cursor.gotoNextSibling()) {
+            continue;
+        }
+
+        var ascended = false;
+        while (cursor.gotoParent()) {
+            if (cursor.gotoNextSibling()) {
+                ascended = true;
+                break;
+            }
+        }
+        if (!ascended) break;
     }
 }
 

@@ -28,13 +28,13 @@ pub const FindingItem = struct {
     }
 };
 
-const Args = struct {
+pub const AuditParams = struct {
     format: []const u8 = "text",
     path: []const u8 = ".",
     config: ?[]const u8 = null,
 };
 
-fn parseArgs(args: ?std.json.Value) Args {
+fn parseArgs(args: ?std.json.Value) AuditParams {
     return .{
         .format = common.getStringArg(args, "format") orelse "text",
         .path = common.getStringArg(args, "path") orelse ".",
@@ -42,14 +42,9 @@ fn parseArgs(args: ?std.json.Value) Args {
     };
 }
 
-pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.Value, deps: *const deps_mod.Deps) !ToolResult {
-    const parsed = parseArgs(args);
-    const format = parsed.format;
-    if (std.mem.eql(u8, format, "evidence")) {
-        return inspect_evidence.executeInspectEvidenceWithDeps(allocator, args, deps);
-    }
-
-    const path = parsed.path;
+pub fn executeAuditNoiseDirect(allocator: std.mem.Allocator, params: AuditParams, deps: *const deps_mod.Deps) !ToolResult {
+    const path = params.path;
+    const format = params.format;
 
     var noise_cfg = noise.NoiseConfig{};
     var ignore_patterns: std.ArrayList([]const u8) = .empty;
@@ -58,7 +53,7 @@ pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
         ignore_patterns.deinit(allocator);
     }
 
-    if (parsed.config) |cfg_path| {
+    if (params.config) |cfg_path| {
         loadNoiseConfig(allocator, deps, cfg_path, &noise_cfg, &ignore_patterns);
     }
 
@@ -75,11 +70,32 @@ pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
         all_findings.deinit(allocator);
     }
 
+    var file_arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    defer file_arena.deinit();
+
     for (files_list.items) |file_path| {
-        try auditOneFile(allocator, deps, file_path, noise_cfg, &ignore_patterns, &all_findings);
+        _ = file_arena.reset(.retain_capacity);
+        try auditOneFile(allocator, file_arena.allocator(), deps, file_path, noise_cfg, ignore_patterns.items, &all_findings);
     }
 
+    std.mem.sort(FindingItem, all_findings.items, {}, sortFindings);
+
     return fmt.auditNoise(allocator, path, all_findings, format);
+}
+
+pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.Value, deps: *const deps_mod.Deps) !ToolResult {
+    const parsed = parseArgs(args);
+    if (std.mem.eql(u8, parsed.format, "evidence")) {
+        return inspect_evidence.executeInspectEvidenceWithDeps(allocator, args, deps);
+    }
+    return executeAuditNoiseDirect(allocator, parsed, deps);
+}
+
+fn sortFindings(_: void, a: FindingItem, b: FindingItem) bool {
+    const file_cmp = std.mem.order(u8, a.file, b.file);
+    if (file_cmp == .lt) return true;
+    if (file_cmp == .gt) return false;
+    return a.line < b.line;
 }
 
 pub fn executeAuditNoise(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
@@ -89,24 +105,23 @@ pub fn executeAuditNoise(allocator: std.mem.Allocator, args: ?std.json.Value) !T
 
 fn auditOneFile(
     allocator: std.mem.Allocator,
+    temp_allocator: std.mem.Allocator,
     deps: *const deps_mod.Deps,
     file_path: []const u8,
     noise_cfg: noise.NoiseConfig,
-    ignore_patterns: *std.ArrayList([]const u8),
+    ignore_patterns: []const []const u8,
     all_findings: *std.ArrayList(FindingItem),
 ) !void {
-    for (ignore_patterns.items) |pat| {
+    for (ignore_patterns) |pat| {
         if (matchGlob(pat, file_path)) return;
     }
 
     const lang = grammars.Language.fromPath(file_path);
     if (lang == .unknown) return;
 
-    const content = deps.fs.readFileAlloc(allocator, file_path) catch return;
-    defer allocator.free(content);
+    const content = deps.fs.readFileAlloc(temp_allocator, file_path) catch return;
 
-    const findings = deps.auditNoiseWithOptions(allocator, content, lang, noise_cfg) catch return;
-    defer noise.deinitFindings(allocator, findings);
+    const findings = deps.auditNoiseWithOptions(temp_allocator, content, lang, noise_cfg) catch return;
 
     for (findings) |f| {
         try all_findings.append(allocator, .{

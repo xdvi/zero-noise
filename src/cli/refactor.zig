@@ -1,5 +1,6 @@
 const std = @import("std");
-const app = @import("../mcp/app.zig");
+const refactor_tool = @import("../mcp/tools/safe_refactor.zig");
+const deps_mod = @import("../mcp/deps.zig");
 
 pub fn run(allocator: std.mem.Allocator, args: []const []const u8, io: std.Io, stdout: std.Io.File, stderr: std.Io.File) !u8 {
     var out_list: std.ArrayList(u8) = .empty;
@@ -18,20 +19,14 @@ pub fn executeRefactor(allocator: std.mem.Allocator, args: []const []const u8, o
     const parsed = parseRefactorArgs(args);
     const file = parsed.file orelse return 1;
 
-    var json_args = std.json.Value{ .object = .empty };
-    defer json_args.object.deinit(allocator);
-
-    try json_args.object.put(allocator, "filepath", std.json.Value{ .string = file });
-    try json_args.object.put(allocator, "fix", std.json.Value{ .bool = parsed.fix });
-    try json_args.object.put(allocator, "format", std.json.Value{ .string = parsed.format });
-    if (parsed.expected_hash) |eh| {
-        try json_args.object.put(allocator, "expected_hash", std.json.Value{ .string = eh });
-    }
-    if (parsed.test_cmd) |tc| {
-        try json_args.object.put(allocator, "test_cmd", std.json.Value{ .string = tc });
-    }
-
-    const res = try app.executeToolCall(allocator, "safe_refactor", json_args);
+    const default_deps = deps_mod.defaultDeps();
+    const res = try refactor_tool.executeSafeRefactorDirect(allocator, .{
+        .filepath = file,
+        .format = parsed.format,
+        .fix = parsed.fix,
+        .expected_hash = parsed.expected_hash,
+        .test_cmd = parsed.test_cmd,
+    }, &default_deps);
     defer res.deinit(allocator);
 
     try out_list.appendSlice(allocator, res.text);

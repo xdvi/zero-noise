@@ -9,13 +9,13 @@ const ledger_mod = @import("../../storage/ledger.zig");
 
 const ToolResult = common.ToolResult;
 
-const Args = struct {
+pub const BlastRadiusParams = struct {
     symbol: []const u8 = "",
     root: []const u8 = ".",
     format: []const u8 = "text",
 };
 
-fn parseArgs(args: ?std.json.Value) Args {
+fn parseArgs(args: ?std.json.Value) BlastRadiusParams {
     return .{
         .symbol = common.getStringArg(args, "symbol") orelse "",
         .root = common.getStringArg(args, "root") orelse ".",
@@ -23,11 +23,10 @@ fn parseArgs(args: ?std.json.Value) Args {
     };
 }
 
-pub fn executeBlastRadiusWithDeps(allocator: std.mem.Allocator, args: ?std.json.Value, deps: *const deps_mod.Deps) !ToolResult {
-    const parsed = parseArgs(args);
-    const symbol = parsed.symbol;
-    const root_dir = parsed.root;
-    const format = parsed.format;
+pub fn executeBlastRadiusDirect(allocator: std.mem.Allocator, params: BlastRadiusParams, deps: *const deps_mod.Deps) !ToolResult {
+    const symbol = params.symbol;
+    const root_dir = params.root;
+    const format = params.format;
 
     if (symbol.len == 0) {
         return ToolResult{ .text = try allocator.dupe(u8, "Error: symbol argument is required"), .is_error = true };
@@ -89,6 +88,11 @@ pub fn executeBlastRadiusWithDeps(allocator: std.mem.Allocator, args: ?std.json.
     const tool_result = try fmt.blastRadius(allocator, symbol, defs_count, refs_count, files_count, risk.asString(), result_refs, format);
     allocator.free(result_refs);
     return tool_result;
+}
+
+pub fn executeBlastRadiusWithDeps(allocator: std.mem.Allocator, args: ?std.json.Value, deps: *const deps_mod.Deps) !ToolResult {
+    const parsed = parseArgs(args);
+    return executeBlastRadiusDirect(allocator, parsed, deps);
 }
 
 pub fn executeBlastRadius(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {

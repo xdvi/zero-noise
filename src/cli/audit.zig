@@ -1,5 +1,6 @@
 const std = @import("std");
-const app = @import("../mcp/app.zig");
+const audit_tool = @import("../mcp/tools/audit_noise.zig");
+const deps_mod = @import("../mcp/deps.zig");
 
 pub fn run(allocator: std.mem.Allocator, args: []const []const u8, io: std.Io, stdout: std.Io.File, stderr: std.Io.File) !u8 {
     _ = stderr;
@@ -28,20 +29,14 @@ pub fn executeAudit(allocator: std.mem.Allocator, args: []const []const u8, out_
         try paths_list.append(allocator, ".");
     }
 
-    var total_exit: u8 = 0;
-    var all_findings: std.ArrayList(usize) = .empty;
-    defer all_findings.deinit(allocator);
+    const default_deps = deps_mod.defaultDeps();
+    var total_findings: usize = 0;
 
     for (paths_list.items) |path| {
-        var json_args = std.json.Value{
-            .object = .empty,
-        };
-        defer json_args.object.deinit(allocator);
-
-        try json_args.object.put(allocator, "path", std.json.Value{ .string = path });
-        try json_args.object.put(allocator, "format", std.json.Value{ .string = format });
-
-        const res = try app.executeToolCall(allocator, "audit_noise", json_args);
+        const res = try audit_tool.executeAuditNoiseDirect(allocator, .{
+            .path = path,
+            .format = format,
+        }, &default_deps);
         defer res.deinit(allocator);
 
         try out_list.appendSlice(allocator, res.text);
@@ -49,15 +44,12 @@ pub fn executeAudit(allocator: std.mem.Allocator, args: []const []const u8, out_
             try out_list.append(allocator, '\n');
         }
         if (res.is_error) {
-            try all_findings.append(allocator, 1);
+            total_findings += 1;
         }
-        if (res.count > 0) {
-            try all_findings.appendNTimes(allocator, 1, res.count);
-        }
+        total_findings += res.count;
     }
 
-    total_exit = if (all_findings.items.len > 0) 1 else 0;
-    return total_exit;
+    return if (total_findings > 0) 1 else 0;
 }
 
 test "audit cli option parsing with violations returns exit code 1" {

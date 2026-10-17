@@ -11,9 +11,6 @@ pub fn build(b: *std.Build) void {
     c_flags_list.appendSlice(b.allocator, &.{
         "-std=c11",
         "-D_DEFAULT_SOURCE",
-        "-DSQLITE_THREADSAFE=1",
-        "-DSQLITE_ENABLE_WAL=1",
-        "-DSQLITE_OMIT_LOAD_EXTENSION=1",
     }) catch unreachable;
     if (lto != null and lto.? != .none) {
         c_flags_list.append(b.allocator, "-flto") catch unreachable;

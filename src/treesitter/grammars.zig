@@ -505,8 +505,38 @@ fn grammarSymbolName(lang: Language) ?[:0]const u8 {
     };
 }
 
+var grammar_mutex: std.atomic.Mutex = .unlocked;
+
+fn lockGrammar() void {
+    while (!grammar_mutex.tryLock()) {
+        std.Thread.yield() catch {};
+    }
+}
+
+fn unlockGrammar() void {
+    grammar_mutex.unlock();
+}
+
+extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsiz: usize) isize;
+
+var self_exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+var self_exe_dir: ?[]const u8 = null;
+
+fn getSelfExeDir() ?[]const u8 {
+    if (self_exe_dir) |dir| return dir;
+    const rc = readlink("/proc/self/exe", &self_exe_buf, self_exe_buf.len);
+    if (rc <= 0) return null;
+    const exe_path = self_exe_buf[0..@intCast(rc)];
+    const dir = std.fs.path.dirname(exe_path) orelse return null;
+    self_exe_dir = dir;
+    return dir;
+}
+
 fn loadGrammarLanguage(lang: Language) ?*const bindings.TSLanguage {
     if (lang == .unknown) return null;
+
+    lockGrammar();
+    defer unlockGrammar();
 
     // Check cache
     for (grammar_handles.items) |h| {
@@ -516,47 +546,52 @@ fn loadGrammarLanguage(lang: Language) ?*const bindings.TSLanguage {
     const lib_name = grammarLibraryName(lang) orelse return null;
     const sym_name = grammarSymbolName(lang) orelse return null;
 
-    // Candidate paths
-    var paths: [4][]const u8 = undefined;
-    var path_count: usize = 0;
-    // Relative to cwd (dev)
-    const dev_path = std.fmt.allocPrint(grammar_allocator, "zig-out/lib/lib{s}.so", .{lib_name}) catch return null;
-    paths[path_count] = dev_path;
-    path_count += 1;
-    // System
-    const sys_path = std.fmt.allocPrint(grammar_allocator, "/usr/lib/lib{s}.so", .{lib_name}) catch return null;
-    paths[path_count] = sys_path;
-    path_count += 1;
-    const sys_path2 = std.fmt.allocPrint(grammar_allocator, "/usr/local/lib/lib{s}.so", .{lib_name}) catch return null;
-    paths[path_count] = sys_path2;
-    path_count += 1;
-
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     var loaded: ?std.DynLib = null;
-    var chosen_path: ?[]const u8 = null;
-    for (paths[0..path_count]) |p| {
-        if (std.DynLib.open(p)) |lib| {
-            loaded = lib;
-            chosen_path = p;
-            break;
+
+    // 1. Relative to binary ($ORIGIN/../lib)
+    if (getSelfExeDir()) |exe_dir| {
+        if (std.fmt.bufPrint(&path_buf, "{s}/../lib/lib{s}.so", .{ exe_dir, lib_name })) |p| {
+            if (std.DynLib.open(p)) |lib| {
+                loaded = lib;
+            } else |_| {}
         } else |_| {}
     }
 
-    // Free unused path strings
-    for (paths[0..path_count]) |p| {
-        if (chosen_path == null or p.ptr != chosen_path.?.ptr) {
-            grammar_allocator.free(p);
-        }
+    // 2. Relative to cwd (dev)
+    if (loaded == null) {
+        if (std.fmt.bufPrint(&path_buf, "zig-out/lib/lib{s}.so", .{lib_name})) |p| {
+            if (std.DynLib.open(p)) |lib| {
+                loaded = lib;
+            } else |_| {}
+        } else |_| {}
+    }
+
+    // 3. System (/usr/lib)
+    if (loaded == null) {
+        if (std.fmt.bufPrint(&path_buf, "/usr/lib/lib{s}.so", .{lib_name})) |p| {
+            if (std.DynLib.open(p)) |lib| {
+                loaded = lib;
+            } else |_| {}
+        } else |_| {}
+    }
+
+    // 4. System (/usr/local/lib)
+    if (loaded == null) {
+        if (std.fmt.bufPrint(&path_buf, "/usr/local/lib/lib{s}.so", .{lib_name})) |p| {
+            if (std.DynLib.open(p)) |lib| {
+                loaded = lib;
+            } else |_| {}
+        } else |_| {}
     }
 
     var lib = loaded orelse return null;
     const sym = lib.lookup(*const fn () callconv(.c) ?*const bindings.TSLanguage, sym_name) orelse {
         lib.close();
-        if (chosen_path) |p| grammar_allocator.free(p);
         return null;
     };
     const ts_lang = sym() orelse {
         lib.close();
-        if (chosen_path) |p| grammar_allocator.free(p);
         return null;
     };
 
@@ -566,10 +601,7 @@ fn loadGrammarLanguage(lang: Language) ?*const bindings.TSLanguage {
         .ts_language = ts_lang,
     }) catch {
         lib.close();
-        if (chosen_path) |p| grammar_allocator.free(p);
         return null;
     };
-
-    if (chosen_path) |p| grammar_allocator.free(p);
     return ts_lang;
 }

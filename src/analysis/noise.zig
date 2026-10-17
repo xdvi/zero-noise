@@ -51,11 +51,6 @@ pub fn auditNoiseWithOptions(
 ) ![]NoiseFinding {
     const ts_lang = lang.getTsLanguage() orelse return &.{};
 
-    const cache_key = NoiseCacheKey{ .lang = lang, .hash = std.hash.Wyhash.hash(0, source), .max_nesting = config.max_nesting, .max_closure_len = config.max_closure_len };
-    if (lookupNoiseCache(allocator, cache_key)) |cached| {
-        return cached;
-    }
-
     var parser = try bindings.getThreadParser();
     if (!parser.setLanguage(ts_lang)) return error.SetLanguageFailed;
 
@@ -67,24 +62,59 @@ pub fn auditNoiseWithOptions(
     defer findings.deinit(allocator);
     errdefer {
         for (findings.items) |f| {
-            if (f.rule == .repeated_literal) allocator.free(f.message);
+            if (f.rule == .repeated_literal) {
+                allocator.free(f.message);
+                allocator.free(f.snippet);
+            }
         }
     }
 
-    // 1. AST walk for structural nesting, closures, redundant ternaries, and raw booleans
-    try walkNoise(allocator, root, source, lang, 0, config, &findings);
+    var comments: std.ArrayList(bindings.TSNode) = .empty;
+    defer comments.deinit(allocator);
 
-    // 2. Scan repeated string literals
-    try collectRepeatedLiterals(allocator, root, source, &findings);
+    var literal_map = std.StringHashMap(LiteralOccur).init(allocator);
+    defer {
+        var kit = literal_map.keyIterator();
+        while (kit.next()) |k| allocator.free(k.*);
+        literal_map.deinit();
+    }
 
-    // 3. Scan commented-out code blocks
-    try collectCommentedCode(allocator, root, source, &findings);
+    try walkNoiseUnified(allocator, root, source, lang, config, &findings, &comments, &literal_map);
 
-    const owned = try findings.toOwnedSlice(allocator);
-    try storeNoiseCache(cache_key, owned);
-    const cloned = try cloneNoiseFindings(allocator, owned);
-    deinitFindings(allocator, owned);
-    return cloned;
+    var it = literal_map.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.count >= 3) {
+            const msg = try std.fmt.allocPrint(allocator, "literal '{s}' repeated {d} times (DRY candidate)", .{
+                entry.key_ptr.*,
+                entry.value_ptr.count,
+            });
+            try findings.append(allocator, .{
+                .rule = .repeated_literal,
+                .line = entry.value_ptr.line,
+                .column = entry.value_ptr.col,
+                .message = msg,
+                .snippet = try allocator.dupe(u8, entry.key_ptr.*),
+            });
+        }
+    }
+
+    var i: usize = 0;
+    while (i < comments.items.len) {
+        const j = findCommentBlockEnd(comments.items, i);
+        const code_point = findFirstCodePoint(comments.items, i, j, source);
+        if (code_point) |pt| {
+            try findings.append(allocator, .{
+                .rule = .commented_code,
+                .line = pt.row + 1,
+                .column = pt.column + 1,
+                .message = "commented-out code block detected",
+                .snippet = grammars.getLineSnippet(source, pt.row),
+            });
+        }
+        i = j;
+    }
+
+    return findings.toOwnedSlice(allocator);
 }
 
 pub fn deinitFindings(allocator: std.mem.Allocator, findings: []NoiseFinding) void {
@@ -99,8 +129,7 @@ pub fn deinitFindings(allocator: std.mem.Allocator, findings: []NoiseFinding) vo
     }
 }
 
-fn isArrowFunctionAssignedToVariable(node: bindings.TSNode) bool {
-    const t = node.getType();
+fn isArrowFunctionAssignedToVariable(node: bindings.TSNode, t: []const u8) bool {
     if (std.mem.eql(u8, t, "arrow_function") or std.mem.eql(u8, t, "function_expression")) {
         const p = node.parent();
         if (!p.isNull() and std.mem.eql(u8, p.getType(), "variable_declarator")) {
@@ -131,65 +160,131 @@ fn isInsideCallArguments(node: bindings.TSNode) bool {
     return false;
 }
 
-fn countLogicalOperators(node: bindings.TSNode, source: []const u8, lang: grammars.Language) u32 {
-    if (node.isNull()) return 0;
-    const t = node.getType();
-
-    if (std.mem.eql(u8, t, "call_expression") or
-        std.mem.eql(u8, t, "call") or
-        std.mem.eql(u8, t, "invocation_expression") or
-        lang.isClosure(t) or
-        lang.isFunction(t))
-    {
-        return 0;
-    }
+fn countLogicalOperators(root: bindings.TSNode, source: []const u8, lang: grammars.Language) u32 {
+    if (root.isNull()) return 0;
 
     var count: u32 = 0;
-    if (grammars.getLogicalOperator(node, source, lang) != null) {
-        count += 1;
+    var cursor = root.treeCursor();
+    defer cursor.deinit();
+
+    while (true) {
+        const node = cursor.currentNode();
+        const t = node.getType();
+
+        var enter_children = true;
+        if (std.mem.eql(u8, t, "call_expression") or
+            std.mem.eql(u8, t, "call") or
+            std.mem.eql(u8, t, "invocation_expression") or
+            lang.isClosure(t) or
+            lang.isFunction(t))
+        {
+            enter_children = false;
+        } else {
+            if (grammars.getLogicalOperator(node, source, lang) != null) {
+                count += 1;
+            }
+        }
+
+        if (enter_children and cursor.gotoFirstChild()) {
+            continue;
+        }
+
+        if (cursor.gotoNextSibling()) {
+            continue;
+        }
+
+        var ascended = false;
+        while (cursor.gotoParent()) {
+            if (cursor.gotoNextSibling()) {
+                ascended = true;
+                break;
+            }
+        }
+        if (!ascended) break;
     }
 
-    var i: u32 = 0;
-    const child_count = node.childCount();
-    while (i < child_count) : (i += 1) {
-        count += countLogicalOperators(node.child(i), source, lang);
-    }
     return count;
 }
 
-fn walkNoise(
+fn walkNoiseUnified(
     allocator: std.mem.Allocator,
-    node: bindings.TSNode,
+    root: bindings.TSNode,
     source: []const u8,
     lang: grammars.Language,
-    depth: u32,
     config: NoiseConfig,
     findings: *std.ArrayList(NoiseFinding),
+    comments: *std.ArrayList(bindings.TSNode),
+    literal_map: *std.StringHashMap(LiteralOccur),
 ) !void {
-    if (node.isNull()) return;
+    if (root.isNull()) return;
 
-    const t = node.getType();
-    var next_depth = depth;
+    var cursor = root.treeCursor();
+    defer cursor.deinit();
 
-    // Reset nesting depth at function boundaries
-    if (lang.isFunctionNode(node) or isArrowFunctionAssignedToVariable(node) or lang.isClosure(t)) {
-        next_depth = 0;
-    } else if (lang.isControl(t)) {
-        const is_elif = lang.isElseIfNode(node);
-        if (!is_elif) {
-            next_depth = depth + 1;
-            try checkExcessiveNesting(allocator, node, next_depth, config, source, findings);
+    var depth_stack: [256]u32 = undefined;
+    depth_stack[0] = 0;
+    var stack_idx: usize = 0;
+
+    while (true) {
+        const node = cursor.currentNode();
+        const t = node.getType();
+
+        if (std.mem.eql(u8, t, "comment")) {
+            try comments.append(allocator, node);
+        } else {
+            if (isStringLiteralNode(t) and !isIgnoredLiteralContext(node)) {
+                try scanLiteralNode(allocator, node, source, literal_map);
+            }
+
+            const cur_depth = depth_stack[stack_idx];
+            var next_depth = cur_depth;
+
+            const is_fn = lang.isFunctionNode(node) or
+                ((lang == .typescript or lang == .tsx) and isArrowFunctionAssignedToVariable(node, t)) or
+                lang.isClosure(t);
+
+            if (is_fn) {
+                next_depth = 0;
+            } else if (lang.isControl(t)) {
+                const is_elif = lang.isElseIfNode(node);
+                if (!is_elif) {
+                    next_depth = cur_depth + 1;
+                    try checkExcessiveNesting(allocator, node, next_depth, config, source, findings);
+                }
+            }
+
+            if (lang.isClosure(t)) {
+                try checkLongClosure(allocator, node, config, source, findings);
+            }
+            if (lang.isTernary(t)) {
+                try checkRedundantTernaryFinding(allocator, node, lang, source, findings);
+            }
+            if (lang.isIfOrWhile(t)) {
+                try checkRawBoolean(allocator, node, lang, source, findings);
+            }
+
+            if (cursor.gotoFirstChild()) {
+                stack_idx += 1;
+                if (stack_idx < depth_stack.len) {
+                    depth_stack[stack_idx] = next_depth;
+                }
+                continue;
+            }
         }
-    }
 
-    try checkLongClosure(allocator, node, lang, config, source, findings);
-    try checkRedundantTernaryFinding(allocator, node, lang, source, findings);
-    try checkRawBoolean(allocator, node, lang, source, findings);
+        if (cursor.gotoNextSibling()) {
+            continue;
+        }
 
-    var i: u32 = 0;
-    const count = node.childCount();
-    while (i < count) : (i += 1) {
-        try walkNoise(allocator, node.child(i), source, lang, next_depth, config, findings);
+        var ascended = false;
+        while (cursor.gotoParent()) {
+            if (stack_idx > 0) stack_idx -= 1;
+            if (cursor.gotoNextSibling()) {
+                ascended = true;
+                break;
+            }
+        }
+        if (!ascended) break;
     }
 }
 
@@ -268,38 +363,6 @@ const LiteralOccur = struct {
     col: u32,
 };
 
-fn collectRepeatedLiterals(
-    allocator: std.mem.Allocator,
-    root: bindings.TSNode,
-    source: []const u8,
-    findings: *std.ArrayList(NoiseFinding),
-) !void {
-    var literal_map = std.StringHashMap(LiteralOccur).init(allocator);
-    defer {
-        var kit = literal_map.keyIterator();
-        while (kit.next()) |k| allocator.free(k.*);
-        literal_map.deinit();
-    }
-
-    try scanLiterals(allocator, root, source, &literal_map);
-
-    var it = literal_map.iterator();
-    while (it.next()) |entry| {
-        if (entry.value_ptr.count >= 3) {
-            const msg = try std.fmt.allocPrint(allocator, "literal '{s}' repeated {d} times (DRY candidate)", .{
-                entry.key_ptr.*,
-                entry.value_ptr.count,
-            });
-            try findings.append(allocator, .{
-                .rule = .repeated_literal,
-                .line = entry.value_ptr.line,
-                .column = entry.value_ptr.col,
-                .message = msg,
-                .snippet = try allocator.dupe(u8, entry.key_ptr.*),
-            });
-        }
-    }
-}
 
 fn cleanCommentLine(line: []const u8) []const u8 {
     var s = std.mem.trim(u8, line, " \t\r");
@@ -357,48 +420,6 @@ fn isCodeLine(trimmed: []const u8) bool {
     return false;
 }
 
-fn gatherComments(node: bindings.TSNode, list: *std.ArrayList(bindings.TSNode), allocator: std.mem.Allocator) !void {
-    if (node.isNull()) return;
-    if (std.mem.eql(u8, node.getType(), "comment")) {
-        try list.append(allocator, node);
-        return;
-    }
-    var i: u32 = 0;
-    const count = node.childCount();
-    while (i < count) : (i += 1) {
-        try gatherComments(node.child(i), list, allocator);
-    }
-}
-
-fn collectCommentedCode(
-    allocator: std.mem.Allocator,
-    root: bindings.TSNode,
-    source: []const u8,
-    findings: *std.ArrayList(NoiseFinding),
-) !void {
-    var comments: std.ArrayList(bindings.TSNode) = .empty;
-    defer comments.deinit(allocator);
-
-    try gatherComments(root, &comments, allocator);
-
-    var i: usize = 0;
-    while (i < comments.items.len) {
-        const j = findCommentBlockEnd(comments.items, i);
-
-        const code_point = findFirstCodePoint(comments.items, i, j, source);
-        if (code_point) |pt| {
-            try findings.append(allocator, .{
-                .rule = .commented_code,
-                .line = pt.row + 1,
-                .column = pt.column + 1,
-                .message = "commented-out code block detected",
-                .snippet = grammars.getLineSnippet(source, pt.row),
-            });
-        }
-
-        i = j;
-    }
-}
 
 fn extractStringLiteralContent(raw: []const u8) ?[]const u8 {
     if (raw.len < 2) return null;
@@ -437,25 +458,6 @@ fn extractStringLiteralContent(raw: []const u8) ?[]const u8 {
     return null;
 }
 
-fn scanLiterals(
-    allocator: std.mem.Allocator,
-    node: bindings.TSNode,
-    source: []const u8,
-    map: *std.StringHashMap(LiteralOccur),
-) !void {
-    if (node.isNull()) return;
-
-    const t = node.getType();
-    if (isStringLiteralNode(t) and !isIgnoredLiteralContext(node)) {
-        try scanLiteralNode(allocator, node, source, map);
-    }
-
-    var i: u32 = 0;
-    const count = node.childCount();
-    while (i < count) : (i += 1) {
-        try scanLiterals(allocator, node.child(i), source, map);
-    }
-}
 
 fn isIgnoredLiteralContext(node: bindings.TSNode) bool {
     var curr = node.parent();
@@ -1094,12 +1096,10 @@ fn checkExcessiveNesting(
 fn checkLongClosure(
     allocator: std.mem.Allocator,
     node: bindings.TSNode,
-    lang: grammars.Language,
     config: NoiseConfig,
     source: []const u8,
     findings: *std.ArrayList(NoiseFinding),
 ) !void {
-    if (!lang.isClosure(node.getType())) return;
     const inside = isInsideCallArguments(node);
     const start = node.startByte();
     const end = node.endByte();
@@ -1121,7 +1121,6 @@ fn checkRedundantTernaryFinding(
     source: []const u8,
     findings: *std.ArrayList(NoiseFinding),
 ) !void {
-    if (!lang.isTernary(node.getType())) return;
     if (!isRedundantTernary(node, source, lang)) return;
     const pt = node.startPoint();
     try findings.append(allocator, .{
@@ -1140,7 +1139,6 @@ fn checkRawBoolean(
     source: []const u8,
     findings: *std.ArrayList(NoiseFinding),
 ) !void {
-    if (!lang.isIfOrWhile(node.getType())) return;
     const cond = node.childByFieldName("condition");
     if (cond.isNull()) return;
     if (countLogicalOperators(cond, source, lang) < 2) return;
@@ -1234,12 +1232,11 @@ fn scanLiteralNode(
     const inner = extractStringLiteralContent(raw) orelse return;
     if (inner.len < 4) return;
     const pt = node.startPoint();
-    const owned = try allocator.dupe(u8, inner);
-    errdefer allocator.free(owned);
-    if (map.getEntry(owned)) |entry| {
-        allocator.free(owned);
+    if (map.getEntry(inner)) |entry| {
         entry.value_ptr.count += 1;
     } else {
+        const owned = try allocator.dupe(u8, inner);
+        errdefer allocator.free(owned);
         try map.put(owned, .{
             .count = 1,
             .line = pt.row + 1,
@@ -1277,57 +1274,4 @@ fn resolveRustTernaryNodes(node: bindings.TSNode, cons_node: *bindings.TSNode, a
 fn resolveDefaultTernaryNodes(node: bindings.TSNode, cons_node: *bindings.TSNode, alt_node: *bindings.TSNode) void {
     cons_node.* = node.childByFieldName("consequence");
     alt_node.* = node.childByFieldName("alternative");
-}
-
-const NoiseCacheKey = struct { lang: grammars.Language, hash: u64, max_nesting: u32, max_closure_len: u32 };
-
-var noise_cache_key: ?NoiseCacheKey = null;
-var noise_cache_value: []NoiseFinding = &.{};
-
-fn lookupNoiseCache(allocator: std.mem.Allocator, key: NoiseCacheKey) ?[]NoiseFinding {
-    if (noise_cache_key) |k| {
-        if (k.lang == key.lang and k.hash == key.hash and k.max_nesting == key.max_nesting and k.max_closure_len == key.max_closure_len) {
-            return cloneNoiseFindings(allocator, noise_cache_value) catch null;
-        }
-    }
-    return null;
-}
-
-fn storeNoiseCache(key: NoiseCacheKey, value: []const NoiseFinding) !void {
-    // Free previous
-    deinitNoiseCacheValue(noise_cache_value);
-    const cached = try std.heap.page_allocator.alloc(NoiseFinding, value.len);
-    errdefer std.heap.page_allocator.free(cached);
-    for (value, 0..) |f, i| {
-        cached[i] = f;
-        if (f.rule == .repeated_literal) {
-            cached[i].message = try std.heap.page_allocator.dupe(u8, f.message);
-            cached[i].snippet = try std.heap.page_allocator.dupe(u8, f.snippet);
-        }
-    }
-    noise_cache_value = cached;
-    noise_cache_key = key;
-}
-
-fn deinitNoiseCacheValue(value: []NoiseFinding) void {
-    for (value) |f| {
-        if (f.rule == .repeated_literal) {
-            std.heap.page_allocator.free(f.message);
-            std.heap.page_allocator.free(f.snippet);
-        }
-    }
-    if (value.len > 0) std.heap.page_allocator.free(value);
-}
-
-fn cloneNoiseFindings(allocator: std.mem.Allocator, src: []const NoiseFinding) ![]NoiseFinding {
-    const out = try allocator.alloc(NoiseFinding, src.len);
-    errdefer allocator.free(out);
-    for (src, 0..) |f, i| {
-        out[i] = f;
-        if (f.rule == .repeated_literal) {
-            out[i].message = try allocator.dupe(u8, f.message);
-            out[i].snippet = try allocator.dupe(u8, f.snippet);
-        }
-    }
-    return out;
 }

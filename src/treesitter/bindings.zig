@@ -80,6 +80,10 @@ pub const TSNode = extern struct {
     pub fn childByFieldName(self: TSNode, name: []const u8) TSNode {
         return ts_node_child_by_field_name(self, name.ptr, @intCast(name.len));
     }
+
+    pub fn treeCursor(self: TSNode) TSTreeCursor {
+        return ts_tree_cursor_new(self);
+    }
 };
 
 pub const Parser = struct {
@@ -232,4 +236,31 @@ test "reusable thread parser parses and switches languages cleanly" {
     defer tree_go.deinit();
     try std.testing.expect(!tree_go.rootNode().hasError());
 }
+
+test "tree cursor traversal" {
+    const grammars = @import("grammars.zig");
+    const ts_lang = grammars.Language.typescript.getTsLanguage().?;
+    var p = try getThreadParser();
+    defer deinitThreadParser();
+
+    try std.testing.expect(p.setLanguage(ts_lang));
+    var tree = try p.parseString("const a = 1; const b = 2;");
+    defer tree.deinit();
+
+    var cursor = tree.rootNode().treeCursor();
+    defer cursor.deinit();
+
+    try std.testing.expect(cursor.gotoFirstChild());
+    const first = cursor.currentNode();
+    try std.testing.expectEqualStrings("lexical_declaration", first.getType());
+
+    try std.testing.expect(cursor.gotoNextSibling());
+    const second = cursor.currentNode();
+    try std.testing.expectEqualStrings("lexical_declaration", second.getType());
+
+    try std.testing.expect(!cursor.gotoNextSibling());
+    try std.testing.expect(cursor.gotoParent());
+    try std.testing.expectEqualStrings("program", cursor.currentNode().getType());
+}
+
 

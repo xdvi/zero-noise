@@ -48,26 +48,36 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     const command = args[1];
-    const sub_args = args[2..];
 
-    const CliHandler = *const fn (std.mem.Allocator, []const []const u8, std.Io, std.Io.File, std.Io.File) anyerror!u8;
-    const CliCommand = struct { name: []const u8, handler: CliHandler };
-    const cli_commands = [_]CliCommand{
-        .{ .name = "audit", .handler = zn.cli.audit.run },
-        .{ .name = "complexity", .handler = zn.cli.complexity.run },
-        .{ .name = "blast", .handler = zn.cli.blast.run },
-        .{ .name = "refactor", .handler = zn.cli.refactor.run },
-    };
+    if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
+        const ver_str = "zero-noise " ++ zn.mcp.protocol.SERVER_VERSION ++ " (no-sqlite)\n";
+        try stdout.writeStreamingAll(io, ver_str);
+        return 0;
+    }
+
+    if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
+        try printUsage(io, stdout);
+        return 0;
+    }
 
     if (std.mem.eql(u8, command, "mcp")) {
         try zn.mcp.server.run(allocator);
         return 0;
     }
 
-    for (cli_commands) |cmd| {
-        if (std.mem.eql(u8, command, cmd.name)) {
-            return try cmd.handler(allocator, sub_args, io, stdout, stderr);
-        }
+    const sub_args = args[2..];
+
+    if (std.mem.eql(u8, command, "audit")) {
+        return try zn.cli.audit.run(allocator, sub_args, io, stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "complexity")) {
+        return try zn.cli.complexity.run(allocator, sub_args, io, stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "blast")) {
+        return try zn.cli.blast.run(allocator, sub_args, io, stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "refactor")) {
+        return try zn.cli.refactor.run(allocator, sub_args, io, stdout, stderr);
     }
 
     return handleBuiltinCommand(allocator, command, sub_args, io, stdout, stderr);
@@ -88,19 +98,6 @@ fn handleBuiltinCommand(allocator: std.mem.Allocator, command: []const u8, sub_a
             return 1;
         };
         try stdout.writeStreamingAll(io, "zero-noise environment initialized successfully.\n");
-        return 0;
-    }
-    if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
-        const ver_str = try std.fmt.allocPrint(allocator, "zero-noise {s} (SQLite {s})\n", .{
-            zn.mcp.protocol.SERVER_VERSION,
-            zn.getSqliteVersion(),
-        });
-        defer allocator.free(ver_str);
-        try stdout.writeStreamingAll(io, ver_str);
-        return 0;
-    }
-    if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
-        try printUsage(io, stdout);
         return 0;
     }
     const err_msg = try std.fmt.allocPrint(allocator, "zero-noise: unknown command '{s}'. Run 'zero-noise --help' for usage.\n", .{command});

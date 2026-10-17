@@ -10,7 +10,7 @@ const db_mod = @import("../../storage/db.zig");
 
 const ToolResult = common.ToolResult;
 
-const Args = struct {
+pub const SafeRefactorParams = struct {
     filepath: []const u8 = "",
     format: []const u8 = "text",
     expected_hash: ?[]const u8 = null,
@@ -23,7 +23,9 @@ const Args = struct {
     fix: bool = true,
 };
 
-fn parseArgs(args: ?std.json.Value) Args {
+const Args = SafeRefactorParams;
+
+fn parseArgs(args: ?std.json.Value) SafeRefactorParams {
     return .{
         .filepath = common.getStringArg(args, "filepath") orelse "",
         .format = common.getStringArg(args, "format") orelse "text",
@@ -38,16 +40,15 @@ fn parseArgs(args: ?std.json.Value) Args {
     };
 }
 
-pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json.Value, deps: *const deps_mod.Deps) !ToolResult {
-    const parsed = parseArgs(args);
-    const filepath = parsed.filepath;
-    const format = parsed.format;
-    const expected_hash = parsed.expected_hash;
-    const test_cmd = parsed.test_cmd;
-    const root = parsed.root;
-    const max_blast_risk_str = parsed.max_blast_risk;
-    const patch_file = parsed.patch_file;
-    const candidate_content = parsed.candidate_content;
+pub fn executeSafeRefactorDirect(allocator: std.mem.Allocator, params: SafeRefactorParams, deps: *const deps_mod.Deps) !ToolResult {
+    const filepath = params.filepath;
+    const format = params.format;
+    const expected_hash = params.expected_hash;
+    const test_cmd = params.test_cmd;
+    const root = params.root;
+    const max_blast_risk_str = params.max_blast_risk;
+    const patch_file = params.patch_file;
+    const candidate_content = params.candidate_content;
     var target_patch: ?[]const u8 = null;
     defer if (target_patch) |tp| allocator.free(tp);
 
@@ -59,7 +60,7 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
         return err;
     };
 
-    const setup = try prepareSafeRefactorSetup(allocator, deps, parsed, filepath, root, expected_hash);
+    const setup = try prepareSafeRefactorSetup(allocator, deps, params, filepath, root, expected_hash);
     defer if (setup.task_id) |tid| allocator.free(tid);
     defer if (setup.maybe_db) |db_ptr| {
         db_ptr.close();
@@ -94,6 +95,11 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
         maybe_ledger,
         task_id,
     );
+}
+
+pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json.Value, deps: *const deps_mod.Deps) !ToolResult {
+    const parsed = parseArgs(args);
+    return executeSafeRefactorDirect(allocator, parsed, deps);
 }
 
 fn formatSafeRefactorResult(
