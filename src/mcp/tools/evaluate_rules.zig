@@ -51,93 +51,14 @@ pub fn matchesPattern(line: []const u8, pattern: []const u8) ?usize {
         break :blk clean_buf[0..clean_len];
     } else pattern;
 
-    var in_sq = false;
-    var in_dq = false;
-    var in_bt = false;
-    var in_block = false;
-
+    var state = PatternScanState{};
     var i: usize = 0;
     while (i < line.len) {
-        if (!in_sq and !in_dq and !in_bt and !in_block) {
-            if (i + 1 < line.len and line[i] == '/' and line[i + 1] == '/') {
-                break;
-            }
-            if (line[i] == '#') {
-                break;
-            }
-            if (i + 1 < line.len and line[i] == '/' and line[i + 1] == '*') {
-                in_block = true;
-                i += 2;
-                continue;
-            }
-            if (line[i] == '"') {
-                in_dq = true;
-                i += 1;
-                continue;
-            }
-            if (line[i] == '\'') {
-                in_sq = true;
-                i += 1;
-                continue;
-            }
-            if (line[i] == '`') {
-                in_bt = true;
-                i += 1;
-                continue;
-            }
-
-            if (needle.len > 0 and std.mem.startsWith(u8, line[i..], needle)) {
-                return i;
-            }
-            if (std.mem.startsWith(u8, line[i..], pattern)) {
-                return i;
-            }
-
-            i += 1;
-            continue;
-        }
-
-        if (in_block) {
-            if (i + 1 < line.len and line[i] == '*' and line[i + 1] == '/') {
-                in_block = false;
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-
-        if (in_dq) {
-            if (line[i] == '\\' and i + 1 < line.len) {
-                i += 2;
-                continue;
-            }
-            if (line[i] == '"') {
-                in_dq = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if (in_sq) {
-            if (line[i] == '\\' and i + 1 < line.len) {
-                i += 2;
-                continue;
-            }
-            if (line[i] == '\'') {
-                in_sq = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if (in_bt) {
-            if (line[i] == '`') {
-                in_bt = false;
-            }
-            i += 1;
-            continue;
-        }
+        const step = advancePatternState(line, i, needle, pattern, state);
+        if (step.matched) return step.match_index;
+        if (step.stop) break;
+        i = step.next_i;
+        state = step.state;
     }
 
     return null;
@@ -284,4 +205,81 @@ fn stringField(robj: std.json.ObjectMap, key: []const u8, default_val: []const u
     const v = robj.get(key) orelse return default_val;
     if (v != .string) return default_val;
     return v.string;
+}
+
+
+const PatternScanState = struct {
+    in_sq: bool = false,
+    in_dq: bool = false,
+    in_bt: bool = false,
+    in_block: bool = false,
+};
+
+const PatternStep = struct {
+    next_i: usize,
+    state: PatternScanState,
+    matched: bool = false,
+    match_index: usize = 0,
+    stop: bool = false,
+};
+
+fn advancePatternState(line: []const u8, i: usize, needle: []const u8, pattern: []const u8, state: PatternScanState) PatternStep {
+    var s = state;
+    if (!s.in_sq and !s.in_dq and !s.in_bt and !s.in_block) {
+        if (i + 1 < line.len and line[i] == '/' and line[i + 1] == '/') {
+            return .{ .next_i = i, .state = s, .stop = true };
+        }
+        if (line[i] == '#') {
+            return .{ .next_i = i, .state = s, .stop = true };
+        }
+        if (i + 1 < line.len and line[i] == '/' and line[i + 1] == '*') {
+            s.in_block = true;
+            return .{ .next_i = i + 2, .state = s };
+        }
+        if (line[i] == '"') {
+            s.in_dq = true;
+            return .{ .next_i = i + 1, .state = s };
+        }
+        if (line[i] == '\'') {
+            s.in_sq = true;
+            return .{ .next_i = i + 1, .state = s };
+        }
+        if (line[i] == '`') {
+            s.in_bt = true;
+            return .{ .next_i = i + 1, .state = s };
+        }
+        if (needle.len > 0 and std.mem.startsWith(u8, line[i..], needle)) {
+            return .{ .next_i = i, .state = s, .matched = true, .match_index = i };
+        }
+        if (std.mem.startsWith(u8, line[i..], pattern)) {
+            return .{ .next_i = i, .state = s, .matched = true, .match_index = i };
+        }
+        return .{ .next_i = i + 1, .state = s };
+    }
+    if (s.in_block) {
+        if (i + 1 < line.len and line[i] == '*' and line[i + 1] == '/') {
+            s.in_block = false;
+            return .{ .next_i = i + 2, .state = s };
+        }
+        return .{ .next_i = i + 1, .state = s };
+    }
+    if (s.in_dq) {
+        if (line[i] == '\\' and i + 1 < line.len) {
+            return .{ .next_i = i + 2, .state = s };
+        }
+        if (line[i] == '"') s.in_dq = false;
+        return .{ .next_i = i + 1, .state = s };
+    }
+    if (s.in_sq) {
+        if (line[i] == '\\' and i + 1 < line.len) {
+            return .{ .next_i = i + 2, .state = s };
+        }
+        if (line[i] == '\'') s.in_sq = false;
+        return .{ .next_i = i + 1, .state = s };
+    }
+    if (s.in_bt) {
+        if (line[i] == '`') s.in_bt = false;
+        return .{ .next_i = i + 1, .state = s };
+    }
+    return .{ .next_i = i + 1, .state = s };
 }
