@@ -86,7 +86,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
     const stdin = std.Io.File.stdin();
     const stdout = std.Io.File.stdout();
 
-    const buffer_size: usize = 16 * 1024 * 1024;
+    const buffer_size: usize = 256 * 1024;
     const in_buf = try allocator.alloc(u8, buffer_size);
     defer allocator.free(in_buf);
     var reader = stdin.readerStreaming(io, in_buf);

@@ -19,4 +19,4 @@ for cmd in cmds:
             pass
         time.sleep(0.005)
     dt = time.perf_counter() - t0
-    print(f"{' '.join(cmd)}: elapsed={dt:.3f}s peakrss={peak}KB rc={p.returncode}")
+    print(f"{' '.join(cmd)}: elapsed={dt*1000:.3f}ms peakrss={peak}KB rc={p.returncode}")
