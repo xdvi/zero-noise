@@ -8,7 +8,6 @@ pub const ErrorCodes = struct {
     pub const ParseError: i32 = -32700;
     pub const InvalidRequest: i32 = -32600;
     pub const MethodNotFound: i32 = -32601;
-    pub const InvalidParams: i32 = -32602;
     pub const InternalError: i32 = -32603;
 };
 

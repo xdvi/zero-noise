@@ -9,13 +9,6 @@ pub const TSPoint = extern struct {
     column: u32,
 };
 
-pub const TSRange = extern struct {
-    start_point: TSPoint,
-    end_point: TSPoint,
-    start_byte: u32,
-    end_byte: u32,
-};
-
 pub const TSNode = extern struct {
     context: [4]u32,
     id: ?*const anyopaque,
