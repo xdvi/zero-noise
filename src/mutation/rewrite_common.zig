@@ -125,17 +125,6 @@ pub fn skipTriviaOrLiteral(src: []const u8, idx: usize) ?usize {
     return null;
 }
 
-pub fn isCSharp(source: []const u8) bool {
-    if (std.mem.indexOf(u8, source, "using System") != null) return true;
-    if (std.mem.indexOf(u8, source, "namespace ") != null) return true;
-    if (std.mem.indexOf(u8, source, "public class ") != null) return true;
-    if (std.mem.indexOf(u8, source, "internal class ") != null) return true;
-    if (std.mem.indexOf(u8, source, "private class ") != null) return true;
-    if (std.mem.indexOf(u8, source, "Console.WriteLine") != null) return true;
-    if (std.mem.indexOf(u8, source, "bool ") != null) return true;
-    return false;
-}
-
 pub fn isAlreadyBoolean(cond: []const u8) bool {
     const trimmed = std.mem.trim(u8, cond, " \t\r\n");
     if (trimmed.len == 0) return false;

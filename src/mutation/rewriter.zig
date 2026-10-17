@@ -90,7 +90,6 @@ pub const invertCondition = common.invertCondition;
 pub const isIdentChar = common.isIdentChar;
 pub const skipWhitespace = common.skipWhitespace;
 pub const matchKeyword = common.matchKeyword;
-pub const isCSharp = common.isCSharp;
 pub const isAlreadyBoolean = common.isAlreadyBoolean;
 pub const parseDeMorganInner = common.parseDeMorganInner;
 pub const shouldWrapDeMorgan = common.shouldWrapDeMorgan;
