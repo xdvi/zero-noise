@@ -78,22 +78,6 @@ pub fn rewrite(allocator: std.mem.Allocator, source: []const u8) !RewriteResult 
     };
 }
 
-// Re-exports for backward compatibility
-pub const rewriteTernaries = ternaries.rewriteTernaries;
-pub const rewriteDoubleNegation = double_neg.rewriteDoubleNegation;
-pub const rewriteDeMorgan = de_morgan.rewriteDeMorgan;
-pub const skipTriviaOrLiteral = common.skipTriviaOrLiteral;
-pub const findMatchingParen = common.findMatchingParen;
-pub const findConditionStart = common.findConditionStart;
-pub const findConditionEnd = common.findConditionEnd;
-pub const invertCondition = common.invertCondition;
-pub const isIdentChar = common.isIdentChar;
-pub const skipWhitespace = common.skipWhitespace;
-pub const matchKeyword = common.matchKeyword;
-pub const isAlreadyBoolean = common.isAlreadyBoolean;
-pub const parseDeMorganInner = common.parseDeMorganInner;
-pub const shouldWrapDeMorgan = common.shouldWrapDeMorgan;
-pub const isOperatorChar = common.isOperatorChar;
 
 test "redundant ternary simplification - true/false" {
     const allocator = std.testing.allocator;
@@ -187,7 +171,7 @@ test "de morgan with outer comparison operator wrapping" {
 test "findConditionStart stops at arrow" {
     const src = "const fn = x => cond ? true : false;";
     const q_idx = std.mem.indexOf(u8, src, "?").?;
-    const start = findConditionStart(src, q_idx);
+    const start = common.findConditionStart(src, q_idx);
     const cond = std.mem.trim(u8, src[start..q_idx], " \t\r\n");
     try std.testing.expectEqualStrings("cond", cond);
 }
