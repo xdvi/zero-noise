@@ -25,15 +25,23 @@ pub fn computeFileBlastRisk(
         for (files_list.items) |f| allocator.free(f);
         files_list.deinit(allocator);
     }
-    common.collectSourceFiles(allocator, root_dir, &files_list) catch return .low;
-    if (files_list.items.len <= 1) return .low;
-
     var file_inputs: std.ArrayList(blast.FileInput) = .empty;
     defer {
         for (file_inputs.items) |fi| allocator.free(fi.content);
         file_inputs.deinit(allocator);
     }
 
+    if (!prepareRiskFiles(allocator, deps, root_dir, &files_list, &file_inputs)) return .low;
+
+    return maxRiskForFunctions(allocator, deps, funcs, file_inputs.items);
+}
+
+fn loadRiskFiles(
+    allocator: std.mem.Allocator,
+    deps: *const deps_mod.Deps,
+    files_list: *std.ArrayList([]const u8),
+    file_inputs: *std.ArrayList(blast.FileInput),
+) void {
     for (files_list.items) |fp| {
         const file_content = deps.fs.readFileAlloc(allocator, fp) catch continue;
         file_inputs.append(allocator, .{ .path = fp, .content = file_content }) catch {
@@ -41,23 +49,42 @@ pub fn computeFileBlastRisk(
             continue;
         };
     }
+}
 
+fn isCandidateFunction(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (std.mem.eql(u8, name, "anonymous")) return false;
+    if (std.mem.eql(u8, name, "constructor")) return false;
+    if (std.mem.startsWith(u8, name, "<")) return false;
+    return true;
+}
+
+fn prepareRiskFiles(
+    allocator: std.mem.Allocator,
+    deps: *const deps_mod.Deps,
+    root_dir: []const u8,
+    files_list: *std.ArrayList([]const u8),
+    file_inputs: *std.ArrayList(blast.FileInput),
+) bool {
+    common.collectSourceFiles(allocator, root_dir, files_list) catch return false;
+    if (files_list.items.len <= 1) return false;
+    loadRiskFiles(allocator, deps, files_list, file_inputs);
+    return true;
+}
+
+fn maxRiskForFunctions(
+    allocator: std.mem.Allocator,
+    deps: *const deps_mod.Deps,
+    funcs: []complexity.FunctionRecord,
+    file_inputs: []blast.FileInput,
+) blast.RiskLevel {
     var max_risk: blast.RiskLevel = .low;
-
     for (funcs) |fn_rec| {
-        if (fn_rec.name.len == 0 or std.mem.eql(u8, fn_rec.name, "anonymous") or std.mem.eql(u8, fn_rec.name, "constructor") or std.mem.startsWith(u8, fn_rec.name, "<")) {
-            continue;
-        }
-
-        var b_res = deps.analyzeBlastRadius(allocator, file_inputs.items, fn_rec.name) catch continue;
+        if (!isCandidateFunction(fn_rec.name)) continue;
+        var b_res = deps.analyzeBlastRadius(allocator, file_inputs, fn_rec.name) catch continue;
         defer b_res.deinit(allocator);
-
-        if (b_res.risk == .high) {
-            return .high;
-        } else if (b_res.risk == .medium) {
-            max_risk = .medium;
-        }
+        if (b_res.risk == .high) return .high;
+        if (b_res.risk == .medium) max_risk = .medium;
     }
-
     return max_risk;
 }
