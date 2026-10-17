@@ -404,49 +404,16 @@ fn collectCommentedCode(
 
     var i: usize = 0;
     while (i < comments.items.len) {
-        const first = comments.items[i];
-        var last = first;
-        var j = i + 1;
-        while (j < comments.items.len) : (j += 1) {
-            const next = comments.items[j];
-            if (next.startPoint().row <= last.endPoint().row + 1) {
-                last = next;
-            } else {
-                break;
-            }
-        }
+        const j = findCommentBlockEnd(comments.items, i);
 
-        var has_code = false;
-        var first_code_pt = first.startPoint();
-        var k = i;
-        while (k < j) : (k += 1) {
-            const c_node = comments.items[k];
-            const text = c_node.slice(source);
-            var line_it = std.mem.splitScalar(u8, text, '\n');
-            var line_offset: u32 = 0;
-            while (line_it.next()) |line| : (line_offset += 1) {
-                const cleaned = cleanCommentLine(line);
-                if (isCodeLine(cleaned)) {
-                    if (!has_code) {
-                        has_code = true;
-                        first_code_pt = .{
-                            .row = c_node.startPoint().row + line_offset,
-                            .column = c_node.startPoint().column,
-                        };
-                    }
-                    break;
-                }
-            }
-            if (has_code) break;
-        }
-
-        if (has_code) {
+        const code_point = findFirstCodePoint(comments.items, i, j, source);
+        if (code_point) |pt| {
             try findings.append(allocator, .{
                 .rule = .commented_code,
-                .line = first_code_pt.row + 1,
-                .column = first_code_pt.column + 1,
+                .line = pt.row + 1,
+                .column = pt.column + 1,
                 .message = "commented-out code block detected",
-                .snippet = grammars.getLineSnippet(source, first_code_pt.row),
+                .snippet = grammars.getLineSnippet(source, pt.row),
             });
         }
 
@@ -1259,6 +1226,40 @@ fn extractTripleQuoted(raw: []const u8) ?[]const u8 {
         std.mem.startsWith(u8, raw[1..], "'''") and std.mem.endsWith(u8, raw, "'''"))
     {
         return raw[4 .. raw.len - 3];
+    }
+    return null;
+}
+
+fn findCommentBlockEnd(comments: []bindings.TSNode, start: usize) usize {
+    var last = comments[start];
+    var j = start + 1;
+    while (j < comments.len) : (j += 1) {
+        const next = comments[j];
+        if (next.startPoint().row <= last.endPoint().row + 1) {
+            last = next;
+        } else {
+            break;
+        }
+    }
+    return j;
+}
+
+fn findFirstCodePoint(comments: []bindings.TSNode, start: usize, end: usize, source: []const u8) ?bindings.TSPoint {
+    var k = start;
+    while (k < end) : (k += 1) {
+        const c_node = comments[k];
+        const text = c_node.slice(source);
+        var line_it = std.mem.splitScalar(u8, text, '\n');
+        var line_offset: u32 = 0;
+        while (line_it.next()) |line| : (line_offset += 1) {
+            const cleaned = cleanCommentLine(line);
+            if (isCodeLine(cleaned)) {
+                return .{
+                    .row = c_node.startPoint().row + line_offset,
+                    .column = c_node.startPoint().column,
+                };
+            }
+        }
     }
     return null;
 }
