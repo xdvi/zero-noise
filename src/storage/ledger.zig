@@ -119,13 +119,13 @@ pub const RefactorLedger = struct {
         defer _ = sqlite.sqlite3_finalize(stmt);
 
         const status = "pending";
-        _ = sqlite.sqlite3_bind_text(stmt, 1, task_id.ptr, @intCast(task_id.len), null);
-        _ = sqlite.sqlite3_bind_text(stmt, 2, file.ptr, @intCast(file.len), null);
-        _ = sqlite.sqlite3_bind_text(stmt, 3, expected_hash.ptr, @intCast(expected_hash.len), null);
-        _ = sqlite.sqlite3_bind_int(stmt, 4, initial_complexity);
-        _ = sqlite.sqlite3_bind_int(stmt, 5, initial_noise);
-        _ = sqlite.sqlite3_bind_text(stmt, 6, status.ptr, @intCast(status.len), null);
-        _ = sqlite.sqlite3_bind_int64(stmt, 7, now_sec);
+        if (sqlite.sqlite3_bind_text(stmt, 1, task_id.ptr, @intCast(task_id.len), null) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_text(stmt, 2, file.ptr, @intCast(file.len), null) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_text(stmt, 3, expected_hash.ptr, @intCast(expected_hash.len), null) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_int(stmt, 4, initial_complexity) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_int(stmt, 5, initial_noise) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_text(stmt, 6, status.ptr, @intCast(status.len), null) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_int64(stmt, 7, now_sec) != sqlite.OK) return error.BindFailed;
 
         if (sqlite.sqlite3_step(stmt) != sqlite.DONE) {
             return error.ExecutionFailed;
@@ -157,9 +157,9 @@ pub const RefactorLedger = struct {
         }
         defer _ = sqlite.sqlite3_finalize(stmt);
 
-        _ = sqlite.sqlite3_bind_text(stmt, 1, status.ptr, @intCast(status.len), null);
-        _ = sqlite.sqlite3_bind_int64(stmt, 2, now_sec);
-        _ = sqlite.sqlite3_bind_text(stmt, 3, task_id.ptr, @intCast(task_id.len), null);
+        if (sqlite.sqlite3_bind_text(stmt, 1, status.ptr, @intCast(status.len), null) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_int64(stmt, 2, now_sec) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_text(stmt, 3, task_id.ptr, @intCast(task_id.len), null) != sqlite.OK) return error.BindFailed;
 
         if (sqlite.sqlite3_step(stmt) != sqlite.DONE) {
             return error.ExecutionFailed;
@@ -246,11 +246,11 @@ pub const RefactorLedger = struct {
         }
         defer _ = sqlite.sqlite3_finalize(stmt);
 
-        _ = sqlite.sqlite3_bind_text(stmt, 1, symbol.ptr, @intCast(symbol.len), null);
-        _ = sqlite.sqlite3_bind_text(stmt, 2, file.ptr, @intCast(file.len), null);
-        _ = sqlite.sqlite3_bind_int(stmt, 3, @intCast(line));
-        _ = sqlite.sqlite3_bind_int(stmt, 4, @intCast(col));
-        _ = sqlite.sqlite3_bind_int(stmt, 5, if (is_def) 1 else 0);
+        if (sqlite.sqlite3_bind_text(stmt, 1, symbol.ptr, @intCast(symbol.len), null) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_text(stmt, 2, file.ptr, @intCast(file.len), null) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_int(stmt, 3, @intCast(line)) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_int(stmt, 4, @intCast(col)) != sqlite.OK) return error.BindFailed;
+        if (sqlite.sqlite3_bind_int(stmt, 5, if (is_def) 1 else 0) != sqlite.OK) return error.BindFailed;
 
         if (sqlite.sqlite3_step(stmt) != sqlite.DONE) {
             return error.ExecutionFailed;
@@ -274,7 +274,7 @@ pub const RefactorLedger = struct {
         }
         defer _ = sqlite.sqlite3_finalize(stmt);
 
-        _ = sqlite.sqlite3_bind_text(stmt, 1, symbol.ptr, @intCast(symbol.len), null);
+        if (sqlite.sqlite3_bind_text(stmt, 1, symbol.ptr, @intCast(symbol.len), null) != sqlite.OK) return error.BindFailed;
 
         var list: std.ArrayList(SymbolRef) = .empty;
         errdefer {

@@ -198,6 +198,7 @@ pub fn executeSafeRefactor(
     const backup_path_z = try allocator.dupeSentinel(u8, backup_path, 0);
     defer allocator.free(backup_path_z);
 
+    _ = std.c.unlink(backup_path_z);
     if (!io.atomicRename(target_path_z, backup_path_z)) {
         _ = std.c.unlink(tmp_path_z);
         return SafeRefactorResult{

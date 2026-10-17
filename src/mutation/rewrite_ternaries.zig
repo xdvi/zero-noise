@@ -77,13 +77,7 @@ pub fn rewriteTernaries(allocator: std.mem.Allocator, source: []const u8) !Rewri
                             }
 
                             if (is_consequent_true and is_alt_false) {
-                                if (isCSharp(source) or isAlreadyBoolean(cond)) {
-                                    try out.appendSlice(allocator, cond);
-                                } else {
-                                    try out.appendSlice(allocator, "Boolean(");
-                                    try out.appendSlice(allocator, cond);
-                                    try out.append(allocator, ')');
-                                }
+                                try out.appendSlice(allocator, cond);
                             } else {
                                 const inverted = try invertCondition(allocator, cond);
                                 defer allocator.free(inverted);

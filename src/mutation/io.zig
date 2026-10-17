@@ -91,8 +91,7 @@ pub fn isDirectory(filepath_z: [*:0]const u8, fd: ?c_int) bool {
 
 pub fn atomicRename(src_path_z: [*:0]const u8, dst_path_z: [*:0]const u8) bool {
     if (std.c.rename(src_path_z, dst_path_z) == 0) return true;
-    _ = std.c.unlink(dst_path_z);
-    return std.c.rename(src_path_z, dst_path_z) == 0;
+    return false;
 }
 
 pub fn checkWorkspaceConfinement(allocator: std.mem.Allocator, filepath: []const u8) !bool {

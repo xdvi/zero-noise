@@ -63,6 +63,10 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
     defer if (target_patch) |tp| allocator.free(tp);
 
     if (patch_file) |pf| {
+        if (!(runner.checkWorkspaceConfinement(allocator, pf) catch false)) {
+            const text = try std.fmt.allocPrint(allocator, "Error: patch file is outside workspace: {s}", .{pf});
+            return ToolResult{ .text = text, .is_error = true };
+        }
         target_patch = deps.fs.readFileAlloc(allocator, pf) catch null;
     }
 

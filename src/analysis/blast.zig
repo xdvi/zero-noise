@@ -439,6 +439,35 @@ fn containsWord(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
+
+fn isInsideStringLiteral(line: []const u8, idx: usize) bool {
+    var in_single = false;
+    var in_double = false;
+    var i: usize = 0;
+    while (i < idx and i < line.len) : (i += 1) {
+        if (in_double) {
+            if (line[i] == '\\' and i + 1 < line.len) {
+                i += 1;
+                continue;
+            }
+            if (line[i] == '"') in_double = false;
+        } else if (in_single) {
+            if (line[i] == '\\' and i + 1 < line.len) {
+                i += 1;
+                continue;
+            }
+            if (line[i] == '\'') in_single = false;
+        } else {
+            if (line[i] == '"') {
+                in_double = true;
+            } else if (line[i] == '\'') {
+                in_single = true;
+            }
+        }
+    }
+    return in_single or in_double;
+}
+
 fn scanByLines(
     allocator: std.mem.Allocator,
     file_path: []const u8,
@@ -463,7 +492,7 @@ fn scanByLines(
             if (!isCommentLine(trimmed, lang)) {
                 var search_pos: usize = 0;
                 while (std.mem.indexOfPos(u8, line, search_pos, symbol)) |idx| {
-                    if (isWordBoundary(line, idx, symbol.len)) {
+                    if (!isInsideStringLiteral(line, idx) and isWordBoundary(line, idx, symbol.len)) {
                         const snippet = trimmed;
                         const is_def = isDefinitionLineSnippet(snippet, symbol, lang);
 

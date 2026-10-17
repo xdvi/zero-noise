@@ -28,6 +28,7 @@ pub fn applyPatch(allocator: std.mem.Allocator, original: []const u8, patch_cont
             const old_start = std.fmt.parseInt(usize, after_minus[0..end_idx], 10) catch continue;
 
             const target_line = if (old_start > 0) old_start - 1 else 0;
+            if (target_line < orig_idx) return error.PatchContextMismatch;
             while (orig_idx < target_line and orig_idx < orig_lines.items.len) : (orig_idx += 1) {
                 try result_lines.append(allocator, orig_lines.items[orig_idx]);
             }
@@ -45,10 +46,10 @@ pub fn applyPatch(allocator: std.mem.Allocator, original: []const u8, patch_cont
                 orig_idx += 1;
             }
         } else if (pline.len > 0 and pline[0] == ' ') {
-            if (orig_idx < orig_lines.items.len) {
-                try result_lines.append(allocator, orig_lines.items[orig_idx]);
-                orig_idx += 1;
-            }
+            if (orig_idx >= orig_lines.items.len) return error.PatchContextMismatch;
+            if (!std.mem.eql(u8, orig_lines.items[orig_idx], pline[1..])) return error.PatchContextMismatch;
+            try result_lines.append(allocator, orig_lines.items[orig_idx]);
+            orig_idx += 1;
         }
     }
 

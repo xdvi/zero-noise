@@ -3,6 +3,7 @@ const common = @import("../common.zig");
 const compact = @import("../compact.zig");
 const fmt = @import("../format.zig");
 const noise = @import("../../analysis/noise.zig");
+const grammars = @import("../../treesitter/grammars.zig");
 const deps_mod = @import("../deps.zig");
 const audit_noise = @import("audit_noise.zig");
 
@@ -211,7 +212,13 @@ pub fn executeEvaluateRulesWithDeps(allocator: std.mem.Allocator, args: ?std.jso
                     var matches_lang = false;
                     for (langs_val.array.items) |l_item| {
                         if (l_item == .string) {
-                            if (std.mem.endsWith(u8, file_path, l_item.string)) {
+                            const filter_lang = grammars.Language.fromName(l_item.string);
+                            if (filter_lang != .unknown) {
+                                if (filter_lang == grammars.Language.fromPath(file_path)) {
+                                    matches_lang = true;
+                                    break;
+                                }
+                            } else if (std.mem.endsWith(u8, file_path, l_item.string)) {
                                 matches_lang = true;
                                 break;
                             }
