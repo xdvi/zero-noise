@@ -9,3 +9,5 @@ __pycache__/
 .zig-cache/
 zig-out/
 .zero-noise/
+perf.data*
+bench/run.json
