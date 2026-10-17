@@ -53,7 +53,7 @@ pub const cli = struct {
 };
 
 pub fn getSqliteVersion() [*:0]const u8 {
-    return storage.db.sqlite.sqlite3_libversion();
+    return "no-sqlite";
 }
 
 test {

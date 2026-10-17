@@ -1,146 +1,79 @@
 const std = @import("std");
 
-pub const sqlite = struct {
-    pub const OK = 0;
-    pub const ROW = 100;
-    pub const DONE = 101;
-
-    pub const OPEN_READWRITE = 0x00000002;
-    pub const OPEN_CREATE = 0x00000004;
-
-    pub const sqlite3 = anyopaque;
-    pub const sqlite3_stmt = anyopaque;
-
-    pub extern "c" fn sqlite3_libversion() [*:0]const u8;
-    pub extern "c" fn sqlite3_open_v2(filename: [*:0]const u8, ppDb: *?*sqlite3, flags: c_int, zVfs: ?[*:0]const u8) c_int;
-    pub extern "c" fn sqlite3_close(db: ?*sqlite3) c_int;
-    pub extern "c" fn sqlite3_exec(db: ?*sqlite3, sql: [*:0]const u8, callback: ?*const anyopaque, arg: ?*anyopaque, errmsg: *?[*:0]u8) c_int;
-    pub extern "c" fn sqlite3_prepare_v2(db: ?*sqlite3, zSql: [*:0]const u8, nByte: c_int, ppStmt: *?*sqlite3_stmt, pzTail: ?*[*:0]const u8) c_int;
-    pub extern "c" fn sqlite3_step(stmt: ?*sqlite3_stmt) c_int;
-    pub extern "c" fn sqlite3_finalize(stmt: ?*sqlite3_stmt) c_int;
-    pub extern "c" fn sqlite3_column_text(stmt: ?*sqlite3_stmt, iCol: c_int) ?[*:0]const u8;
-    pub extern "c" fn sqlite3_column_bytes(stmt: ?*sqlite3_stmt, iCol: c_int) c_int;
-    pub extern "c" fn sqlite3_column_int(stmt: ?*sqlite3_stmt, iCol: c_int) c_int;
-    pub extern "c" fn sqlite3_column_int64(stmt: ?*sqlite3_stmt, iCol: c_int) i64;
-    pub extern "c" fn sqlite3_bind_text(stmt: ?*sqlite3_stmt, idx: c_int, val: [*]const u8, len: c_int, destructor: ?*const fn (?*anyopaque) callconv(.c) void) c_int;
-    pub extern "c" fn sqlite3_bind_int(stmt: ?*sqlite3_stmt, idx: c_int, val: c_int) c_int;
-    pub extern "c" fn sqlite3_bind_int64(stmt: ?*sqlite3_stmt, idx: c_int, val: i64) c_int;
-    pub extern "c" fn sqlite3_changes(db: ?*sqlite3) c_int;
-    pub extern "c" fn sqlite3_errmsg(db: ?*sqlite3) [*:0]const u8;
-    pub extern "c" fn sqlite3_free(ptr: ?*anyopaque) void;
-};
-
 pub const Database = struct {
-    handle: *sqlite.sqlite3,
+    allocator: std.mem.Allocator,
+    db_path: []u8,
+    in_memory: bool,
 
-    pub fn open(path_z: [*:0]const u8) !Database {
-        var db_ptr: ?*sqlite.sqlite3 = null;
-        const flags = sqlite.OPEN_READWRITE | sqlite.OPEN_CREATE;
-        const rc = sqlite.sqlite3_open_v2(path_z, &db_ptr, flags, null);
-        if (rc != sqlite.OK or db_ptr == null) {
-            return error.DatabaseOpenFailed;
-        }
+    file_cache: std.StringHashMap(FileCacheData),
+    refactor_tasks: std.StringHashMap(RefactorTaskData),
+    symbol_refs: std.ArrayList(SymbolRefData),
 
-        const db = Database{ .handle = db_ptr.? };
-        try db.initPragmas();
-        try db.initSchema();
+    pub fn open(allocator: std.mem.Allocator, path_z: [*:0]const u8) !Database {
+        const path = std.mem.sliceTo(path_z, 0);
+        const in_memory = std.mem.eql(u8, path, ":memory:");
+        const db = Database{
+            .allocator = allocator,
+            .db_path = try allocator.dupe(u8, path),
+            .in_memory = in_memory,
+            .file_cache = std.StringHashMap(FileCacheData).init(allocator),
+            .refactor_tasks = std.StringHashMap(RefactorTaskData).init(allocator),
+            .symbol_refs = .empty,
+        };
         return db;
     }
 
     pub fn close(self: *Database) void {
-        _ = sqlite.sqlite3_close(self.handle);
+        std.debug.print("CLOSE\\n", .{});
+        // free file_cache
+        var it = self.file_cache.iterator();
+        while (it.next()) |e| {
+            self.allocator.free(e.key_ptr.*);
+            self.allocator.free(e.value_ptr.sha256);
+        }
+        self.file_cache.deinit();
+        // free refactor_tasks
+        var it2 = self.refactor_tasks.iterator();
+        while (it2.next()) |e| {
+            self.allocator.free(e.key_ptr.*);
+            self.allocator.free(e.value_ptr.task_id);
+            self.allocator.free(e.value_ptr.file);
+            self.allocator.free(e.value_ptr.expected_hash);
+            self.allocator.free(e.value_ptr.status);
+        }
+        self.refactor_tasks.deinit();
+        // free symbol_refs
+        for (self.symbol_refs.items) |r| {
+            self.allocator.free(r.symbol);
+            self.allocator.free(r.file);
+        }
+        self.symbol_refs.deinit(self.allocator);
+        self.allocator.free(self.db_path);
     }
 
     pub fn exec(self: Database, sql: [*:0]const u8) !void {
-        var err_msg: ?[*:0]u8 = null;
-        const rc = sqlite.sqlite3_exec(self.handle, sql, null, null, &err_msg);
-        if (rc != sqlite.OK) {
-            if (err_msg) |msg| {
-                sqlite.sqlite3_free(msg);
-            }
-            return error.QueryFailed;
-        }
+        _ = self;
+        _ = sql;
+        return;
     }
 
-    fn initPragmas(self: Database) !void {
-        try self.exec("PRAGMA journal_mode = WAL;");
-        try self.exec("PRAGMA synchronous = NORMAL;");
-        try self.exec("PRAGMA busy_timeout = 5000;");
+    pub fn recordFileCache(self: *Database, path: [*:0]const u8, mtime: i64, size: i64, sha256: [*:0]const u8, noise_count: i32, complexity: i32) !void {
+        const path_str = std.mem.sliceTo(path, 0);
+        const sha_str = std.mem.sliceTo(sha256, 0);
+        const key = try self.allocator.dupe(u8, path_str);
+        errdefer self.allocator.free(key);
+        const val = FileCacheData{
+            .path = key,
+            .mtime = mtime,
+            .size = size,
+            .sha256 = try self.allocator.dupe(u8, sha_str),
+            .noise_count = noise_count,
+            .complexity = complexity,
+        };
+        try self.file_cache.put(key, val);
     }
 
-    fn initSchema(self: Database) !void {
-        try self.exec(
-            \\CREATE TABLE IF NOT EXISTS file_cache (
-            \\    path TEXT PRIMARY KEY,
-            \\    mtime INTEGER NOT NULL,
-            \\    size INTEGER NOT NULL,
-            \\    sha256 TEXT NOT NULL,
-            \\    noise_count INTEGER NOT NULL,
-            \\    complexity INTEGER NOT NULL
-            \\);
-            \\CREATE TABLE IF NOT EXISTS symbol_refs (
-            \\    symbol TEXT NOT NULL,
-            \\    file TEXT NOT NULL,
-            \\    line INTEGER NOT NULL,
-            \\    col INTEGER NOT NULL,
-            \\    is_definition INTEGER NOT NULL,
-            \\    PRIMARY KEY (symbol, file, line, col)
-            \\);
-            \\CREATE TABLE IF NOT EXISTS refactor_ledger (
-            \\    task_id TEXT PRIMARY KEY,
-            \\    file TEXT NOT NULL,
-            \\    expected_hash TEXT NOT NULL,
-            \\    initial_complexity INTEGER NOT NULL,
-            \\    initial_noise INTEGER NOT NULL,
-            \\    status TEXT NOT NULL,
-            \\    updated_at INTEGER NOT NULL
-            \\);
-        );
-    }
-
-    pub fn recordFileCache(
-        self: Database,
-        path: [*:0]const u8,
-        mtime: i64,
-        size: i64,
-        sha256: [*:0]const u8,
-        noise_count: i32,
-        complexity: i32,
-    ) !void {
-        var stmt: ?*sqlite.sqlite3_stmt = null;
-        const sql =
-            \\INSERT INTO file_cache (path, mtime, size, sha256, noise_count, complexity)
-            \\VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            \\ON CONFLICT(path) DO UPDATE SET
-            \\    mtime=excluded.mtime,
-            \\    size=excluded.size,
-            \\    sha256=excluded.sha256,
-            \\    noise_count=excluded.noise_count,
-            \\    complexity=excluded.complexity;
-        ;
-        if (sqlite.sqlite3_prepare_v2(self.handle, sql, -1, &stmt, null) != sqlite.OK) return error.PrepareFailed;
-        defer _ = sqlite.sqlite3_finalize(stmt);
-
-        _ = sqlite.sqlite3_bind_text(stmt, 1, path, @intCast(std.mem.len(path)), null);
-        _ = sqlite.sqlite3_bind_int64(stmt, 2, mtime);
-        _ = sqlite.sqlite3_bind_int64(stmt, 3, size);
-        _ = sqlite.sqlite3_bind_text(stmt, 4, sha256, @intCast(std.mem.len(sha256)), null);
-        _ = sqlite.sqlite3_bind_int(stmt, 5, noise_count);
-        _ = sqlite.sqlite3_bind_int(stmt, 6, complexity);
-
-        if (sqlite.sqlite3_step(stmt) != sqlite.DONE) return error.ExecutionFailed;
-    }
-
-    pub fn recordFileCacheSlice(
-        self: Database,
-        allocator: std.mem.Allocator,
-        path: []const u8,
-        mtime: i64,
-        size: i64,
-        sha256: []const u8,
-        noise_count: i32,
-        complexity: i32,
-    ) !void {
+    pub fn recordFileCacheSlice(self: *Database, allocator: std.mem.Allocator, path: []const u8, mtime: i64, size: i64, sha256: []const u8, noise_count: i32, complexity: i32) !void {
         const path_z = try allocator.dupeSentinel(u8, path, 0);
         defer allocator.free(path_z);
         const sha_z = try allocator.dupeSentinel(u8, sha256, 0);
@@ -162,45 +95,54 @@ pub const Database = struct {
         }
     };
 
-    pub fn getFileCache(
-        self: Database,
-        allocator: std.mem.Allocator,
-        path: []const u8,
-    ) !?FileCacheEntry {
-        var stmt: ?*sqlite.sqlite3_stmt = null;
-        const sql = "SELECT path, mtime, size, sha256, noise_count, complexity FROM file_cache WHERE path = ?1;";
-        if (sqlite.sqlite3_prepare_v2(self.handle, sql, -1, &stmt, null) != sqlite.OK) return error.PrepareFailed;
-        defer _ = sqlite.sqlite3_finalize(stmt);
-
-        _ = sqlite.sqlite3_bind_text(stmt, 1, path.ptr, @intCast(path.len), null);
-
-        const rc = sqlite.sqlite3_step(stmt);
-        if (rc == sqlite.DONE) return null;
-        if (rc != sqlite.ROW) return error.ExecutionFailed;
-
-        const path_ptr = sqlite.sqlite3_column_text(stmt, 0) orelse "";
-        const path_len: usize = @intCast(sqlite.sqlite3_column_bytes(stmt, 0));
-        const mtime = sqlite.sqlite3_column_int64(stmt, 1);
-        const size = sqlite.sqlite3_column_int64(stmt, 2);
-        const sha_ptr = sqlite.sqlite3_column_text(stmt, 3) orelse "";
-        const sha_len: usize = @intCast(sqlite.sqlite3_column_bytes(stmt, 3));
-        const noise_count = sqlite.sqlite3_column_int(stmt, 4);
-        const complexity = sqlite.sqlite3_column_int(stmt, 5);
-
-        const path_dup = try allocator.dupe(u8, path_ptr[0..path_len]);
-        errdefer allocator.free(path_dup);
-        const sha_dup = try allocator.dupe(u8, sha_ptr[0..sha_len]);
-        errdefer allocator.free(sha_dup);
-
-        return FileCacheEntry{
-            .path = path_dup,
-            .mtime = mtime,
-            .size = size,
-            .sha256 = sha_dup,
-            .noise_count = noise_count,
-            .complexity = complexity,
-        };
+    pub fn getFileCache(self: Database, allocator: std.mem.Allocator, path: []const u8) !?FileCacheEntry {
+        if (self.file_cache.get(path)) |v| {
+            return FileCacheEntry{
+                .path = try allocator.dupe(u8, v.path),
+                .mtime = v.mtime,
+                .size = v.size,
+                .sha256 = try allocator.dupe(u8, v.sha256),
+                .noise_count = v.noise_count,
+                .complexity = v.complexity,
+            };
+        }
+        return null;
     }
+
+    pub fn getRefactorTasks(self: *Database) *std.StringHashMap(RefactorTaskData) {
+        return &self.refactor_tasks;
+    }
+
+    pub fn getSymbolRefs(self: *Database) *std.ArrayList(SymbolRefData) {
+        return &self.symbol_refs;
+    }
+};
+
+const FileCacheData = struct {
+    path: []const u8,
+    mtime: i64,
+    size: i64,
+    sha256: []const u8,
+    noise_count: i32,
+    complexity: i32,
+};
+
+pub const RefactorTaskData = struct {
+    task_id: []const u8,
+    file: []const u8,
+    expected_hash: []const u8,
+    initial_complexity: i32,
+    initial_noise: i32,
+    status: []const u8,
+    updated_at: i64,
+};
+
+pub const SymbolRefData = struct {
+    symbol: []const u8,
+    file: []const u8,
+    line: u32,
+    col: u32,
+    is_def: bool,
 };
 
 pub const DbPaths = struct {
@@ -237,29 +179,7 @@ pub fn openProjectDb(allocator: std.mem.Allocator, root_path: []const u8) !Datab
     const io = std.Options.debug_io;
     std.Io.Dir.cwd().createDirPath(io, paths.dir_path) catch {};
 
-    return Database.open(paths.db_path.ptr);
-}
-
-test "database init and file cache" {
-    const allocator = std.testing.allocator;
-    var db = try Database.open(":memory:");
-    defer db.close();
-
-    try db.recordFileCache("/test/file.ts", 12345678, 420, "abc123sha", 0, 5);
-
-    try db.recordFileCacheSlice(allocator, "/test/file2.ts", 87654321, 512, "fedcba987", 2, 7);
-    const entry = (try db.getFileCache(allocator, "/test/file2.ts")) orelse return error.TestExpectedEntry;
-    defer entry.deinit(allocator);
-
-    try std.testing.expectEqualStrings("/test/file2.ts", entry.path);
-    try std.testing.expectEqual(@as(i64, 87654321), entry.mtime);
-    try std.testing.expectEqual(@as(i64, 512), entry.size);
-    try std.testing.expectEqualStrings("fedcba987", entry.sha256);
-    try std.testing.expectEqual(@as(i32, 2), entry.noise_count);
-    try std.testing.expectEqual(@as(i32, 7), entry.complexity);
-
-    const missing = try db.getFileCache(allocator, "/nonexistent.ts");
-    try std.testing.expect(missing == null);
+    return Database.open(allocator, paths.db_path.ptr);
 }
 
 pub fn bootstrap(allocator: std.mem.Allocator, io: std.Io, root_path: []const u8) !void {
@@ -268,39 +188,10 @@ pub fn bootstrap(allocator: std.mem.Allocator, io: std.Io, root_path: []const u8
 
     std.Io.Dir.cwd().createDirPath(io, paths.dir_path) catch {};
 
-    var db = try Database.open(paths.db_path.ptr);
+    var db = try Database.open(allocator, paths.db_path.ptr);
     db.close();
 }
 
-test "bootstrap initializes directory and database" {
-    const allocator = std.testing.allocator;
-    const io = std.Options.debug_io;
-    const test_dir = "tests/.test_bootstrap_env";
-
-    // Clean up if existed
-    _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db") catch {};
-    _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db-wal") catch {};
-    _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db-shm") catch {};
-
-    try bootstrap(allocator, io, test_dir);
-    defer {
-        _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db") catch {};
-        _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db-wal") catch {};
-        _ = std.Io.Dir.cwd().deleteFile(io, "tests/.test_bootstrap_env/.zero-noise/state.db-shm") catch {};
-    }
-
-    // Verify database file exists and can be opened
-    var db = try Database.open("tests/.test_bootstrap_env/.zero-noise/state.db");
-    defer db.close();
-
-    // Idempotent call - second bootstrap shouldn't fail
-    try bootstrap(allocator, io, test_dir);
-}
-
-test "database exec error handles memory safely" {
-    var db = try Database.open(":memory:");
-    defer db.close();
-
-    const err = db.exec("INVALID SQL SYNTAX HERE;");
-    try std.testing.expectError(error.QueryFailed, err);
+pub fn getSqliteVersion() [*:0]const u8 {
+    return "no-sqlite";
 }

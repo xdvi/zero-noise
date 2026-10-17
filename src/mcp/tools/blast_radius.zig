@@ -74,7 +74,7 @@ pub fn executeBlastRadiusWithDeps(allocator: std.mem.Allocator, args: ?std.json.
     if (deps.db.open(allocator, root_dir)) |db_inst| {
         var db = db_inst;
         defer db.close();
-        var ledger = ledger_mod.RefactorLedger.init(db, allocator);
+        var ledger = ledger_mod.RefactorLedger.init(&db, allocator);
         for (result_refs) |ref| {
             ledger.recordSymbol(symbol, ref.file, ref.line, ref.column, ref.is_definition) catch {};
         }

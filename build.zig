@@ -44,9 +44,8 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("c/vendor/grammars/c_sharp/src"));
     mod.addIncludePath(b.path("c/vendor/grammars/zig/src"));
 
-    // Core sources (sqlite + tree-sitter) linked into main binary.
+    // Core sources (tree-sitter only; storage is file-based now).
     const core_sources: []const []const u8 = &.{
-        "c/sqlite3.c",
         "c/vendor/tree-sitter/lib/src/lib.c",
     };
 

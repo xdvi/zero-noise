@@ -59,9 +59,12 @@ pub fn executeSafeRefactorWithDeps(allocator: std.mem.Allocator, args: ?std.json
         return err;
     };
 
-    var setup = try prepareSafeRefactorSetup(allocator, deps, parsed, filepath, root, expected_hash);
+    const setup = try prepareSafeRefactorSetup(allocator, deps, parsed, filepath, root, expected_hash);
     defer if (setup.task_id) |tid| allocator.free(tid);
-    defer if (setup.maybe_db) |*db| db.close();
+    defer if (setup.maybe_db) |db_ptr| {
+        db_ptr.close();
+        allocator.destroy(db_ptr);
+    };
 
     const force = setup.force;
     const fix = setup.fix;
@@ -216,7 +219,7 @@ fn parseRiskLevel(s: []const u8) ?blast.RiskLevel {
 
 const SafeRefactorSetup = struct {
     target_patch: ?[]u8,
-    maybe_db: ?db_mod.Database,
+    maybe_db: ?*db_mod.Database,
     maybe_ledger: ?ledger_mod.RefactorLedger,
     task_id: ?[]const u8,
     force: bool,
@@ -237,19 +240,24 @@ fn prepareSafeRefactorSetup(
     root: []const u8,
     expected_hash: ?[]const u8,
 ) !SafeRefactorSetup {
-    const maybe_db = deps.db.open(allocator, root) catch null;
+    var maybe_db_ptr: ?*db_mod.Database = null;
     var maybe_ledger: ?ledger_mod.RefactorLedger = null;
     var task_id: ?[]const u8 = null;
-    if (maybe_db) |db| {
-        maybe_ledger = ledger_mod.RefactorLedger.init(db, allocator);
-        if (maybe_ledger) |*ledger| {
-            task_id = ledger.createTask(filepath, expected_hash orelse "unlocked", 0, 0) catch null;
+    if (deps.db.open(allocator, root)) |db_val| {
+        const db_ptr = allocator.create(db_mod.Database) catch null;
+        if (db_ptr) |ptr| {
+            ptr.* = db_val;
+            maybe_db_ptr = ptr;
+            maybe_ledger = ledger_mod.RefactorLedger.init(ptr, allocator);
+            if (maybe_ledger) |*ledger| {
+                task_id = ledger.createTask(filepath, expected_hash orelse "unlocked", 0, 0) catch null;
+            }
         }
-    }
+    } else |_| {}
 
     return SafeRefactorSetup{
         .target_patch = null,
-        .maybe_db = maybe_db,
+        .maybe_db = maybe_db_ptr,
         .maybe_ledger = maybe_ledger,
         .task_id = task_id,
         .force = parsed.force,
