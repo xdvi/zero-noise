@@ -73,36 +73,7 @@ pub fn handleJsonRpcLineWithDeps(
         defer allocator.free(tools_res);
         return try protocol.buildSuccessResponseJson(allocator, req_id, tools_res);
     } else if (std.mem.eql(u8, method, "tools/call")) {
-        const params_val = root_obj.get("params");
-        var tool_name: []const u8 = "";
-        var arguments: ?std.json.Value = null;
-
-        if (params_val) |pv| {
-            if (pv == .object) {
-                if (pv.object.get("name")) |nv| {
-                    if (nv == .string) tool_name = nv.string;
-                }
-                arguments = pv.object.get("arguments");
-            }
-        }
-
-        const tool_result = app.executeToolCallWithDeps(allocator, tool_name, arguments, deps_ptr) catch |err| {
-            const err_msg = try std.fmt.allocPrint(allocator, "Tool execution error: {s}", .{@errorName(err)});
-            defer allocator.free(err_msg);
-            const call_res = try protocol.buildToolCallResultJson(allocator, err_msg, true);
-            defer allocator.free(call_res);
-            return try protocol.buildSuccessResponseJson(allocator, req_id, call_res);
-        };
-        defer tool_result.deinit(allocator);
-
-        const call_res = try protocol.buildToolCallResultJson(
-            allocator,
-            tool_result.text,
-            tool_result.is_error,
-        );
-        defer allocator.free(call_res);
-
-        return try protocol.buildSuccessResponseJson(allocator, req_id, call_res);
+        return handleToolCallMethod(allocator, root_obj, req_id, deps_ptr);
     } else {
         const msg = try std.fmt.allocPrint(allocator, "Method not found: {s}", .{method});
         defer allocator.free(msg);
@@ -122,24 +93,7 @@ pub fn run(allocator: std.mem.Allocator) !void {
 
     while (try reader.interface.takeDelimiter('\n')) |line| {
         if (line.len == 0) continue;
-
-        var req_arena = std.heap.ArenaAllocator.init(allocator);
-        defer req_arena.deinit();
-        const req_alloc = req_arena.allocator();
-
-        const default_deps = deps_mod.defaultDeps();
-        const maybe_resp = handleJsonRpcLineWithDeps(req_alloc, line, &default_deps) catch |err| {
-            const err_resp = protocol.buildErrorResponseJson(req_alloc, .null_id, protocol.ErrorCodes.InternalError, @errorName(err)) catch null;
-            if (err_resp) |resp| {
-                stdout.writeStreamingAll(io, resp) catch {};
-                stdout.writeStreamingAll(io, "\n") catch {};
-            }
-            continue;
-        };
-        if (maybe_resp) |resp| {
-            try stdout.writeStreamingAll(io, resp);
-            try stdout.writeStreamingAll(io, "\n");
-        }
+        processRequestLine(allocator, io, stdout, line) catch {};
     }
 }
 
@@ -149,4 +103,63 @@ pub fn handleJsonRpcLine(
 ) !?[]const u8 {
     const default = deps_mod.defaultDeps();
     return handleJsonRpcLineWithDeps(allocator, line, &default);
+}
+
+fn handleToolCallMethod(
+    allocator: std.mem.Allocator,
+    root_obj: std.json.ObjectMap,
+    req_id: protocol.RequestId,
+    deps_ptr: *const deps_mod.Deps,
+) !?[]const u8 {
+    const params_val = root_obj.get("params");
+    var tool_name: []const u8 = "";
+    var arguments: ?std.json.Value = null;
+
+    if (params_val) |pv| {
+        if (pv == .object) {
+            if (pv.object.get("name")) |nv| {
+                if (nv == .string) tool_name = nv.string;
+            }
+            arguments = pv.object.get("arguments");
+        }
+    }
+
+    const tool_result = app.executeToolCallWithDeps(allocator, tool_name, arguments, deps_ptr) catch |err| {
+        const err_msg = try std.fmt.allocPrint(allocator, "Tool execution error: {s}", .{@errorName(err)});
+        defer allocator.free(err_msg);
+        const call_res = try protocol.buildToolCallResultJson(allocator, err_msg, true);
+        defer allocator.free(call_res);
+        return try protocol.buildSuccessResponseJson(allocator, req_id, call_res);
+    };
+    defer tool_result.deinit(allocator);
+
+    const call_res = try protocol.buildToolCallResultJson(
+        allocator,
+        tool_result.text,
+        tool_result.is_error,
+    );
+    defer allocator.free(call_res);
+
+    return try protocol.buildSuccessResponseJson(allocator, req_id, call_res);
+}
+
+
+fn processRequestLine(allocator: std.mem.Allocator, io: std.Io, stdout: std.Io.File, line: []const u8) !void {
+    var req_arena = std.heap.ArenaAllocator.init(allocator);
+    defer req_arena.deinit();
+    const req_alloc = req_arena.allocator();
+
+    const default_deps = deps_mod.defaultDeps();
+    const maybe_resp = handleJsonRpcLineWithDeps(req_alloc, line, &default_deps) catch |err| {
+        const err_resp = protocol.buildErrorResponseJson(req_alloc, .null_id, protocol.ErrorCodes.InternalError, @errorName(err)) catch null;
+        if (err_resp) |resp| {
+            stdout.writeStreamingAll(io, resp) catch {};
+            stdout.writeStreamingAll(io, "\n") catch {};
+        }
+        return;
+    };
+    if (maybe_resp) |resp| {
+        try stdout.writeStreamingAll(io, resp);
+        try stdout.writeStreamingAll(io, "\n");
+    }
 }
