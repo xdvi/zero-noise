@@ -300,55 +300,7 @@ fn checkIsDefinition(
 
     const parent = node.parent();
     if (!parent.isNull()) {
-        const pt = parent.getType();
-        const name_node = parent.childByFieldName("name");
-        if (!name_node.isNull() and name_node.startByte() == node.startByte()) {
-            if (std.mem.eql(u8, pt, "function_declaration") or
-                std.mem.eql(u8, pt, "method_declaration") or
-                std.mem.eql(u8, pt, "function_item") or
-                std.mem.eql(u8, pt, "function_definition") or
-                std.mem.eql(u8, pt, "method_definition") or
-                std.mem.eql(u8, pt, "variable_declarator") or
-                std.mem.eql(u8, pt, "class_declaration") or
-                std.mem.eql(u8, pt, "class_definition") or
-                std.mem.eql(u8, pt, "struct_item") or
-                std.mem.eql(u8, pt, "enum_item") or
-                std.mem.eql(u8, pt, "trait_item") or
-                std.mem.eql(u8, pt, "type_item") or
-                std.mem.eql(u8, pt, "interface_declaration") or
-                std.mem.eql(u8, pt, "type_alias_declaration") or
-                std.mem.eql(u8, pt, "type_spec"))
-            {
-                return true;
-            }
-        }
-        if (std.mem.eql(u8, pt, "let_declaration")) {
-            const pattern = parent.childByFieldName("pattern");
-            if (!pattern.isNull() and node.startByte() >= pattern.startByte() and node.endByte() <= pattern.endByte()) {
-                return true;
-            }
-        }
-        if (std.mem.eql(u8, pt, "assignment")) {
-            const left = parent.childByFieldName("left");
-            if (!left.isNull() and node.startByte() >= left.startByte() and node.endByte() <= left.endByte()) {
-                return true;
-            }
-        }
-        if (std.mem.eql(u8, pt, "short_var_decl")) {
-            const left = parent.childByFieldName("left");
-            if (!left.isNull() and node.startByte() >= left.startByte() and node.endByte() <= left.endByte()) {
-                return true;
-            }
-        }
-        if (std.mem.eql(u8, pt, "call_expression") or
-            std.mem.eql(u8, pt, "arguments") or
-            std.mem.eql(u8, pt, "argument_list") or
-            std.mem.eql(u8, pt, "binary_expression") or
-            std.mem.eql(u8, pt, "unary_expression") or
-            std.mem.eql(u8, pt, "return_statement"))
-        {
-            return false;
-        }
+        if (isDefinitionParent(parent, node)) |result| return result;
     }
 
     return isDefinitionLineSnippet(snippet, symbol, lang);
@@ -740,4 +692,57 @@ fn parseOneFile(f: FileInput) ParsedFile {
         .lang = lang,
         .tree = parsed_tree,
     };
+}
+
+fn isDefinitionParent(parent: bindings.TSNode, node: bindings.TSNode) ?bool {
+    const pt = parent.getType();
+    const name_node = parent.childByFieldName("name");
+    if (!name_node.isNull() and name_node.startByte() == node.startByte()) {
+        if (isDefinitionParentType(pt)) return true;
+    }
+    if (std.mem.eql(u8, pt, "let_declaration")) {
+        const pattern = parent.childByFieldName("pattern");
+        if (!pattern.isNull() and node.startByte() >= pattern.startByte() and node.endByte() <= pattern.endByte()) {
+            return true;
+        }
+    }
+    if (std.mem.eql(u8, pt, "assignment")) {
+        const left = parent.childByFieldName("left");
+        if (!left.isNull() and node.startByte() >= left.startByte() and node.endByte() <= left.endByte()) {
+            return true;
+        }
+    }
+    if (std.mem.eql(u8, pt, "short_var_decl")) {
+        const left = parent.childByFieldName("left");
+        if (!left.isNull() and node.startByte() >= left.startByte() and node.endByte() <= left.endByte()) {
+            return true;
+        }
+    }
+    if (isNonDefinitionParentType(pt)) return false;
+    return null;
+}
+
+fn isDefinitionParentType(pt: []const u8) bool {
+    const types = [_][]const u8{
+        "function_declaration", "method_declaration", "function_item",
+        "function_definition",  "method_definition", "variable_declarator",
+        "class_declaration",    "class_definition",  "struct_item",
+        "enum_item",            "trait_item",       "type_item",
+        "interface_declaration", "type_alias_declaration", "type_spec",
+    };
+    for (types) |t| {
+        if (std.mem.eql(u8, pt, t)) return true;
+    }
+    return false;
+}
+
+fn isNonDefinitionParentType(pt: []const u8) bool {
+    const types = [_][]const u8{
+        "call_expression", "arguments", "argument_list",
+        "binary_expression", "unary_expression", "return_statement",
+    };
+    for (types) |t| {
+        if (std.mem.eql(u8, pt, t)) return true;
+    }
+    return false;
 }
