@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.DS_Store
+*.log
+.codegraph/
+.atl/
+.zig-cache/
+zig-out/
+.zero-noise/

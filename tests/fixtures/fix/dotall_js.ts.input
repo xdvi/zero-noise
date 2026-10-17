@@ -1,0 +1,1 @@
+if (a) { log(1); } if (b) { return true; } else { return false; }

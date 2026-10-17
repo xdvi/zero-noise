@@ -1,0 +1,25 @@
+{
+  "name": "zero-noise",
+  "version": "0.1.0",
+  "description": "Zero-noise refactor skill: DRY, early return, semantic predicates, and algebraic simplification for Go, Rust, TypeScript, Python, and C#.",
+  "author": {
+    "name": "David",
+    "url": "https://github.com/xdvi"
+  },
+  "homepage": "https://github.com/xdvi/zero-noise",
+  "repository": "https://github.com/xdvi/zero-noise",
+  "license": "MIT",
+  "contextFileName": "AGENTS.md",
+  "keywords": [
+    "refactor",
+    "clean-code",
+    "dry",
+    "early-return",
+    "zero-noise",
+    "go",
+    "typescript",
+    "rust",
+    "python",
+    "csharp"
+  ]
+}

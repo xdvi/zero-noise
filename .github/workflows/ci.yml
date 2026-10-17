@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Native Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Zig
+        uses: ./.github/actions/setup-zig
+        with:
+          version: 0.17.0
+
+      - name: Build zero-noise binary
+        run: zig build -Doptimize=fast
+
+      - name: Run native unit and integration tests
+        run: zig build test
+
+      - name: Smoke test native binary
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./zig-out/bin/zero-noise.exe --version
+            ./zig-out/bin/zero-noise.exe audit src/main.zig
+          else
+            ./zig-out/bin/zero-noise --version
+            ./zig-out/bin/zero-noise audit src/main.zig
+          fi
+
+  lint:
+    name: Lint & Manifest Sync
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Verify manifests in sync
+        run: python3 scripts/sync_manifests.py --check

@@ -1,0 +1,116 @@
+#!/bin/sh
+set -eu
+
+VERSION="v0.1.0"
+REPO="xdvi/zero-noise"
+
+# Determine OS
+os_name="$(uname -s)"
+case "$os_name" in
+    Linux*)  OS="linux" ;;
+    Darwin*) OS="macos" ;;
+    CYGWIN*|MINGW*|MSYS*|Windows_NT*) OS="windows" ;;
+    *)
+        echo "Error: unsupported OS '$os_name'" >&2
+        exit 1
+        ;;
+esac
+
+# Determine Arch
+arch_name="$(uname -m)"
+case "$arch_name" in
+    x86_64|amd64) ARCH="x86_64" ;;
+    aarch64|arm64) ARCH="aarch64" ;;
+    *)
+        echo "Error: unsupported architecture '$arch_name'" >&2
+        exit 1
+        ;;
+esac
+
+case "${ARCH}-${OS}" in
+    x86_64-linux)   TARGET="x86_64-linux-musl" ; EXT="tar.gz" ; EXE="zero-noise" ;;
+    aarch64-linux)  TARGET="aarch64-linux-musl" ; EXT="tar.gz" ; EXE="zero-noise" ;;
+    aarch64-macos)  TARGET="aarch64-macos" ; EXT="tar.gz" ; EXE="zero-noise" ;;
+    x86_64-macos)   TARGET="x86_64-macos" ; EXT="tar.gz" ; EXE="zero-noise" ;;
+    x86_64-windows) TARGET="x86_64-windows-gnu" ; EXT="zip" ; EXE="zero-noise.exe" ;;
+    *)
+        echo "Error: no precompiled zero-noise binary for ${ARCH}-${OS}" >&2
+        exit 1
+        ;;
+esac
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zero-noise/${VERSION}"
+CACHE_BIN="${CACHE_DIR}/${EXE}"
+LOCAL_BIN="${HOME}/.local/bin/${EXE}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CO_BIN="${SCRIPT_DIR}/${EXE}"
+
+# Fast path 1: Check if co-located binary exists and is executable
+if [ -x "$CO_BIN" ] && [ "$CO_BIN" != "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ]; then
+    if [ "${1:-}" = "--bootstrap" ]; then exit 0; fi
+    exec "$CO_BIN" "$@"
+fi
+
+# Fast path 2: Check if cached binary exists and is executable
+if [ -x "$CACHE_BIN" ]; then
+    if [ "${1:-}" = "--bootstrap" ]; then exit 0; fi
+    exec "$CACHE_BIN" "$@"
+fi
+
+# Fast path 3: Check if zero-noise is already installed globally in PATH (and not this script)
+if command -v zero-noise >/dev/null 2>&1; then
+    RESOLVED="$(command -v zero-noise)"
+    SELF="${SCRIPT_DIR}/$(basename "$0")"
+    if [ "$RESOLVED" != "$SELF" ] && [ -x "$RESOLVED" ]; then
+        if [ "${1:-}" = "--bootstrap" ]; then exit 0; fi
+        exec "$RESOLVED" "$@"
+    fi
+fi
+
+# Fast path 4: Check if ~/.local/bin/zero-noise is executable
+if [ -x "$LOCAL_BIN" ]; then
+    if [ "${1:-}" = "--bootstrap" ]; then exit 0; fi
+    exec "$LOCAL_BIN" "$@"
+fi
+
+# Not found: Bootstrap download from GitHub Releases
+echo "==> [zero-noise] Bootstrapping native binary (${TARGET}) from GitHub Release ${VERSION}..." >&2
+
+mkdir -p "$CACHE_DIR"
+TMP_DIR="$(mktemp -d 2>/dev/null || mktemp -d -t 'zero-noise-shim')"
+ARCHIVE="${TMP_DIR}/zero-noise.${EXT}"
+URL="https://github.com/${REPO}/releases/download/${VERSION}/zero-noise-${TARGET}.${EXT}"
+
+if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 3 "$URL" -o "$ARCHIVE"
+elif command -v wget >/dev/null 2>&1; then
+    wget -q "$URL" -O "$ARCHIVE"
+else
+    echo "Error: curl or wget is required to download zero-noise binary." >&2
+    rm -rf "$TMP_DIR"
+    exit 1
+fi
+
+if [ "$EXT" = "zip" ]; then
+    unzip -q -o "$ARCHIVE" -d "$TMP_DIR"
+    mv -f "${TMP_DIR}/${EXE}" "$CACHE_BIN"
+else
+    tar -xzf "$ARCHIVE" -C "$TMP_DIR"
+    mv -f "${TMP_DIR}/${EXE}" "$CACHE_BIN"
+fi
+chmod +x "$CACHE_BIN"
+rm -rf "$TMP_DIR"
+
+# Link to ~/.local/bin if directory exists or can be created
+mkdir -p "$(dirname "$LOCAL_BIN")" 2>/dev/null || true
+if [ -d "$(dirname "$LOCAL_BIN")" ] && [ -w "$(dirname "$LOCAL_BIN")" ]; then
+    ln -sf "$CACHE_BIN" "$LOCAL_BIN" 2>/dev/null || cp -f "$CACHE_BIN" "$LOCAL_BIN" 2>/dev/null || true
+fi
+
+echo "✔ [zero-noise] Installed native binary to ${CACHE_BIN}" >&2
+
+if [ "${1:-}" = "--bootstrap" ]; then
+    exit 0
+fi
+
+exec "$CACHE_BIN" "$@"

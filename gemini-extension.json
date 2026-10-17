@@ -1,0 +1,14 @@
+{
+  "name": "zero-noise",
+  "description": "Zero-noise refactor skill: DRY, early return, semantic predicates, and algebraic simplification for Go, Rust, TypeScript, Python, and C#.",
+  "version": "0.1.0",
+  "contextFileName": "AGENTS.md",
+  "mcpServers": {
+    "zero-noise": {
+      "command": "zero-noise",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

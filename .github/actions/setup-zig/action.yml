@@ -1,0 +1,67 @@
+name: 'Set up Zig'
+description: 'Install Zig compiler without Node.js runtime'
+inputs:
+  version:
+    description: 'Zig version to install'
+    required: false
+    default: '0.17.0'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Download and install Zig
+      shell: bash
+      run: |
+        VERSION="${{ inputs.version }}"
+        OS="${{ runner.os }}"
+        ARCH="${{ runner.arch }}"
+
+        case "$OS" in
+          Linux)
+            case "$ARCH" in
+              X64) TARGET="x86_64-linux" ;;
+              ARM64) TARGET="aarch64-linux" ;;
+              *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+            esac
+            EXT="tar.xz"
+            ;;
+          macOS)
+            case "$ARCH" in
+              X64) TARGET="x86_64-macos" ;;
+              ARM64) TARGET="aarch64-macos" ;;
+              *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+            esac
+            EXT="tar.xz"
+            ;;
+          Windows)
+            TARGET="x86_64-windows"
+            EXT="zip"
+            ;;
+          *)
+            echo "Unsupported OS: $OS"
+            exit 1
+            ;;
+        esac
+
+        TARBALL="zig-${TARGET}-${VERSION}.${EXT}"
+        URL="https://pkg.machengine.org/zig/${TARBALL}"
+        INSTALL_DIR="$HOME/.zig-install"
+
+        mkdir -p "$INSTALL_DIR"
+        echo "Downloading Zig from ${URL}..."
+        curl -sSL --retry 3 "${URL}" -o "$HOME/${TARBALL}"
+
+        if [ "$EXT" = "zip" ]; then
+          unzip -q -o "$HOME/${TARBALL}" -d "$INSTALL_DIR"
+        else
+          tar -xJf "$HOME/${TARBALL}" -C "$INSTALL_DIR"
+        fi
+
+        ZIG_BIN_DIR="${INSTALL_DIR}/zig-${TARGET}-${VERSION}"
+        if [ "$OS" = "Windows" ]; then
+          ZIG_BIN_DIR=$(cygpath -w "${ZIG_BIN_DIR}")
+        fi
+        echo "${ZIG_BIN_DIR}" >> "$GITHUB_PATH"
+        rm -f "$HOME/${TARBALL}"
+
+        echo "Zig ${VERSION} installed in ${ZIG_BIN_DIR}"

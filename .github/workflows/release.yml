@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: Initialize GitHub Release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Ensure release draft or tag exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" || gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --generate-notes
+
+  build-release:
+    name: Build (${{ matrix.target }})
+    needs: create-release
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-linux-musl
+            asset_name: zero-noise-x86_64-linux-musl.tar.gz
+            binary: zero-noise
+            archive_type: tar
+          - target: aarch64-linux-musl
+            asset_name: zero-noise-aarch64-linux-musl.tar.gz
+            binary: zero-noise
+            archive_type: tar
+          - target: aarch64-macos
+            asset_name: zero-noise-aarch64-macos.tar.gz
+            binary: zero-noise
+            archive_type: tar
+          - target: x86_64-macos
+            asset_name: zero-noise-x86_64-macos.tar.gz
+            binary: zero-noise
+            archive_type: tar
+          - target: x86_64-windows-gnu
+            asset_name: zero-noise-x86_64-windows-gnu.zip
+            binary: zero-noise.exe
+            archive_type: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Zig
+        uses: ./.github/actions/setup-zig
+        with:
+          version: 0.17.0
+
+      - name: Cross-compile zero-noise binary
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast
+
+      - name: Archive binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.archive_type }}" = "zip" ]; then
+            cd zig-out/bin && zip -9 "../../dist/${{ matrix.asset_name }}" "${{ matrix.binary }}"
+          else
+            cd zig-out/bin && tar -czvf "../../dist/${{ matrix.asset_name }}" "${{ matrix.binary }}"
+          fi
+
+      - name: Upload asset directly to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" "dist/${{ matrix.asset_name }}" --clobber
+
+  checksums:
+    name: Generate and Upload SHA-256 Checksums
+    needs: build-release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download all assets and generate checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          cd release-assets
+          gh release download "${{ github.ref_name }}" --pattern "*.tar.gz" --pattern "*.zip"
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "${{ github.ref_name }}" SHA256SUMS --clobber

@@ -1,0 +1,10 @@
+{
+  "zero-noise-bootstrap": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "./bin/zero-noise --bootstrap"
+      }
+    ]
+  }
+}

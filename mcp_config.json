@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "zero-noise": {
+      "command": "zero-noise",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

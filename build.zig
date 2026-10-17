@@ -1,0 +1,100 @@
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+    const strip = b.option(bool, "strip", "Strip debug symbols") orelse (optimize != .debug);
+    const is_linux = target.result.os.tag == .linux;
+    const lto: ?std.zig.LtoMode = b.option(std.zig.LtoMode, "lto", "Link-Time Optimization mode") orelse (if (optimize != .debug and is_linux) .thin else null);
+
+    var c_flags_list: std.ArrayList([]const u8) = .empty;
+    c_flags_list.appendSlice(b.allocator, &.{
+        "-std=c11",
+        "-D_DEFAULT_SOURCE",
+        "-DSQLITE_THREADSAFE=1",
+        "-DSQLITE_ENABLE_WAL=1",
+        "-DSQLITE_OMIT_LOAD_EXTENSION=1",
+    }) catch unreachable;
+    if (lto != null and lto.? != .none) {
+        c_flags_list.append(b.allocator, "-flto") catch unreachable;
+    }
+    if (target.result.os.tag.isDarwin()) {
+        c_flags_list.append(b.allocator, "-D_DARWIN_C_SOURCE") catch unreachable;
+    } else {
+        c_flags_list.append(b.allocator, "-D_POSIX_C_SOURCE=200809L") catch unreachable;
+    }
+    const c_flags = c_flags_list.items;
+
+    // Module for zero-noise core
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .strip = strip,
+    });
+
+    mod.addIncludePath(b.path("c"));
+    mod.addIncludePath(b.path("c/vendor/tree-sitter/lib/include"));
+    mod.addIncludePath(b.path("c/vendor/tree-sitter/lib/src"));
+    mod.addIncludePath(b.path("c/vendor/grammars/go/src"));
+    mod.addIncludePath(b.path("c/vendor/grammars/rust/src"));
+    mod.addIncludePath(b.path("c/vendor/grammars/python/src"));
+    mod.addIncludePath(b.path("c/vendor/grammars/typescript/typescript/src"));
+    mod.addIncludePath(b.path("c/vendor/grammars/typescript/tsx/src"));
+    mod.addIncludePath(b.path("c/vendor/grammars/c_sharp/src"));
+
+    const c_sources: []const []const u8 = &.{
+        "c/sqlite3.c",
+        "c/vendor/tree-sitter/lib/src/lib.c",
+        "c/vendor/grammars/go/src/parser.c",
+        "c/vendor/grammars/rust/src/parser.c",
+        "c/vendor/grammars/rust/src/scanner.c",
+        "c/vendor/grammars/python/src/parser.c",
+        "c/vendor/grammars/python/src/scanner.c",
+        "c/vendor/grammars/typescript/typescript/src/parser.c",
+        "c/vendor/grammars/typescript/typescript/src/scanner.c",
+        "c/vendor/grammars/typescript/tsx/src/parser.c",
+        "c/vendor/grammars/typescript/tsx/src/scanner.c",
+        "c/vendor/grammars/c_sharp/src/parser.c",
+        "c/vendor/grammars/c_sharp/src/scanner.c",
+    };
+
+    for (c_sources) |src| {
+        mod.addCSourceFile(.{
+            .file = b.path(src),
+            .flags = c_flags,
+        });
+    }
+
+    mod.link_libc = true;
+
+    // Executable
+    const exe = b.addExecutable(.{
+        .name = "zero-noise",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .strip = strip,
+            .imports = &.{
+                .{ .name = "zero-noise", .module = mod },
+            },
+        }),
+    });
+    exe.root_module.link_libc = true;
+    if (lto) |m| {
+        exe.lto = m;
+    }
+
+    b.installArtifact(exe);
+
+    // Tests
+    const mod_tests = b.addTest(.{
+        .root_module = mod,
+    });
+    const run_mod_tests = b.addRunArtifact(mod_tests);
+    run_mod_tests.setCwd(b.path("."));
+
+    const test_step = b.step("test", "Run library and integration tests");
+    test_step.dependOn(&run_mod_tests.step);
+}

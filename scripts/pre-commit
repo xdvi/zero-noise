@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Standalone Git pre-commit hook for Zero-Noise.
+# Audits staged files for structural noise and rejects commit if issues are found.
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+if command -v zero-noise >/dev/null 2>&1; then
+  ZERO_NOISE_BIN="zero-noise"
+elif [[ -x "${REPO_ROOT}/zig-out/bin/zero-noise" ]]; then
+  ZERO_NOISE_BIN="${REPO_ROOT}/zig-out/bin/zero-noise"
+elif [[ -x "${HOME}/.local/bin/zero-noise" ]]; then
+  ZERO_NOISE_BIN="${HOME}/.local/bin/zero-noise"
+else
+  echo "zero-noise: error: native zero-noise binary not found in PATH or zig-out/bin/" >&2
+  exit 1
+fi
+
+EXTENSIONS_REGEX='\.(py|ts|tsx|js|jsx|go|rs|cs)$'
+
+# Read staged files via git diff --cached --name-only --diff-filter=ACM
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [[ -z "${STAGED_FILES}" ]]; then
+  exit 0
+fi
+
+FAILED=0
+TMP_DIR=$(mktemp -d -t zero-noise-hook-XXXXXX)
+trap 'rm -rf "${TMP_DIR}"' EXIT
+
+while IFS= read -r file; do
+  [[ -z "${file}" ]] && continue
+
+  if [[ "${file}" =~ ${EXTENSIONS_REGEX} ]]; then
+    ext=".${file##*.}"
+    tmp_staged="${TMP_DIR}/staged_${RANDOM}${ext}"
+    if git show ":${file}" > "${tmp_staged}" 2>/dev/null; then
+      if ! out=$("${ZERO_NOISE_BIN}" audit "${tmp_staged}" 2>&1); then
+        FAILED=1
+        echo "${out//${tmp_staged}/${file}}" >&2
+      fi
+    fi
+  fi
+done <<< "${STAGED_FILES}"
+
+if [[ ${FAILED} -ne 0 ]]; then
+  echo "zero-noise: commit rejected: structural noise detected in staged files" >&2
+  exit 1
+fi
+
+exit 0
