@@ -82,7 +82,10 @@ pub fn auditNoiseWithOptions(
 
 pub fn deinitFindings(allocator: std.mem.Allocator, findings: []NoiseFinding) void {
     for (findings) |f| {
-        if (f.rule == .repeated_literal) allocator.free(f.message);
+        if (f.rule == .repeated_literal) {
+            allocator.free(f.message);
+            allocator.free(f.snippet);
+        }
     }
     if (findings.len > 0) {
         allocator.free(findings);
@@ -342,9 +345,13 @@ fn collectRepeatedLiterals(
     findings: *std.ArrayList(NoiseFinding),
 ) !void {
     var literal_map = std.StringHashMap(LiteralOccur).init(allocator);
-    defer literal_map.deinit();
+    defer {
+        var kit = literal_map.keyIterator();
+        while (kit.next()) |k| allocator.free(k.*);
+        literal_map.deinit();
+    }
 
-    try scanLiterals(root, source, &literal_map);
+    try scanLiterals(allocator, root, source, &literal_map);
 
     var it = literal_map.iterator();
     while (it.next()) |entry| {
@@ -358,7 +365,7 @@ fn collectRepeatedLiterals(
                 .line = entry.value_ptr.line,
                 .column = entry.value_ptr.col,
                 .message = msg,
-                .snippet = entry.key_ptr.*,
+                .snippet = try allocator.dupe(u8, entry.key_ptr.*),
             });
         }
     }
@@ -580,6 +587,7 @@ fn extractStringLiteralContent(raw: []const u8) ?[]const u8 {
 }
 
 fn scanLiterals(
+    allocator: std.mem.Allocator,
     node: bindings.TSNode,
     source: []const u8,
     map: *std.StringHashMap(LiteralOccur),
@@ -593,10 +601,13 @@ fn scanLiterals(
             if (extractStringLiteralContent(raw)) |inner| {
                 if (inner.len >= 4) {
                     const pt = node.startPoint();
-                    if (map.getEntry(inner)) |entry| {
+                    const owned = try allocator.dupe(u8, inner);
+                    errdefer allocator.free(owned);
+                    if (map.getEntry(owned)) |entry| {
+                        allocator.free(owned);
                         entry.value_ptr.count += 1;
                     } else {
-                        try map.put(inner, .{
+                        try map.put(owned, .{
                             .count = 1,
                             .line = pt.row + 1,
                             .col = pt.column + 1,
@@ -610,7 +621,7 @@ fn scanLiterals(
     var i: u32 = 0;
     const count = node.childCount();
     while (i < count) : (i += 1) {
-        try scanLiterals(node.child(i), source, map);
+        try scanLiterals(allocator, node.child(i), source, map);
     }
 }
 
@@ -738,7 +749,7 @@ test "auditNoise - Python repeated literals" {
     const findings = try auditNoise(std.testing.allocator, source, .python);
     defer {
         for (findings) |f| {
-            if (f.rule == .repeated_literal) std.testing.allocator.free(f.message);
+            if (f.rule == .repeated_literal) { std.testing.allocator.free(f.message); std.testing.allocator.free(f.snippet); }
         }
         std.testing.allocator.free(findings);
     }
@@ -759,7 +770,7 @@ test "auditNoise - dirty typescript fixture" {
 
     defer {
         for (findings) |f| {
-            if (f.rule == .repeated_literal) std.testing.allocator.free(f.message);
+            if (f.rule == .repeated_literal) { std.testing.allocator.free(f.message); std.testing.allocator.free(f.snippet); }
         }
         std.testing.allocator.free(findings);
     }
@@ -859,7 +870,7 @@ test "auditNoise - string literals in imports and decorators are ignored" {
     const findings = try auditNoise(std.testing.allocator, source, .typescript);
     defer {
         for (findings) |f| {
-            if (f.rule == .repeated_literal) std.testing.allocator.free(f.message);
+            if (f.rule == .repeated_literal) { std.testing.allocator.free(f.message); std.testing.allocator.free(f.snippet); }
         }
         std.testing.allocator.free(findings);
     }
@@ -914,7 +925,7 @@ test "auditNoise - Go imports and C# attributes are ignored for repeated literal
     const go_findings = try auditNoise(std.testing.allocator, go_source, .go);
     defer {
         for (go_findings) |f| {
-            if (f.rule == .repeated_literal) std.testing.allocator.free(f.message);
+            if (f.rule == .repeated_literal) { std.testing.allocator.free(f.message); std.testing.allocator.free(f.snippet); }
         }
         std.testing.allocator.free(go_findings);
     }
@@ -934,7 +945,7 @@ test "auditNoise - Go imports and C# attributes are ignored for repeated literal
     const cs_findings = try auditNoise(std.testing.allocator, cs_source, .c_sharp);
     defer {
         for (cs_findings) |f| {
-            if (f.rule == .repeated_literal) std.testing.allocator.free(f.message);
+            if (f.rule == .repeated_literal) { std.testing.allocator.free(f.message); std.testing.allocator.free(f.snippet); }
         }
         std.testing.allocator.free(cs_findings);
     }
@@ -1190,7 +1201,7 @@ test "deinitFindings handles empty slices, repeated literals, and mixed findings
         .line = 2,
         .column = 1,
         .message = try std.fmt.allocPrint(std.testing.allocator, "allocated msg {d}", .{42}),
-        .snippet = "snippet",
+        .snippet = try std.testing.allocator.dupe(u8, "snippet"),
     };
     findings[2] = .{
         .rule = .commented_code,

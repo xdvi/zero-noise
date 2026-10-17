@@ -104,7 +104,7 @@ pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
     for (files_list.items) |file_path| {
         var ignored = false;
         for (ignore_patterns.items) |pat| {
-            if (std.mem.indexOf(u8, file_path, pat) != null) {
+            if (matchGlob(pat, file_path)) {
                 ignored = true;
                 break;
             }
@@ -137,4 +137,30 @@ pub fn executeAuditNoiseWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
 pub fn executeAuditNoise(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
     const default = deps_mod.defaultDeps();
     return executeAuditNoiseWithDeps(allocator, args, &default);
+}
+
+fn matchGlob(pattern: []const u8, text: []const u8) bool {
+    // Simple wildcard matcher supporting '*' and '?'.
+    var pi: usize = 0;
+    var ti: usize = 0;
+    var star_pi: ?usize = null;
+    var star_ti: usize = 0;
+    while (ti < text.len) {
+        if (pi < pattern.len and (pattern[pi] == '?' or pattern[pi] == text[ti])) {
+            pi += 1;
+            ti += 1;
+        } else if (pi < pattern.len and pattern[pi] == '*') {
+            star_pi = pi;
+            star_ti = ti;
+            pi += 1;
+        } else if (star_pi) |sp| {
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    while (pi < pattern.len and pattern[pi] == '*') : (pi += 1) {}
+    return pi == pattern.len;
 }

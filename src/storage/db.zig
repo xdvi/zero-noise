@@ -121,10 +121,10 @@ pub const Database = struct {
         if (sqlite.sqlite3_prepare_v2(self.handle, sql, -1, &stmt, null) != sqlite.OK) return error.PrepareFailed;
         defer _ = sqlite.sqlite3_finalize(stmt);
 
-        _ = sqlite.sqlite3_bind_text(stmt, 1, path, -1, null);
+        _ = sqlite.sqlite3_bind_text(stmt, 1, path, @intCast(std.mem.len(path)), null);
         _ = sqlite.sqlite3_bind_int64(stmt, 2, mtime);
         _ = sqlite.sqlite3_bind_int64(stmt, 3, size);
-        _ = sqlite.sqlite3_bind_text(stmt, 4, sha256, -1, null);
+        _ = sqlite.sqlite3_bind_text(stmt, 4, sha256, @intCast(std.mem.len(sha256)), null);
         _ = sqlite.sqlite3_bind_int(stmt, 5, noise_count);
         _ = sqlite.sqlite3_bind_int(stmt, 6, complexity);
 

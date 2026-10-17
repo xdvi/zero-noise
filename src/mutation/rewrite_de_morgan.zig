@@ -4,8 +4,7 @@ const isIdentChar = common.isIdentChar;
 const skipWhitespace = common.skipWhitespace;
 const matchKeyword = common.matchKeyword;
 const skipTriviaOrLiteral = common.skipTriviaOrLiteral;
-const isCSharp = common.isCSharp;
-const isAlreadyBoolean = common.isAlreadyBoolean;
+
 const findConditionStart = common.findConditionStart;
 const findConditionEnd = common.findConditionEnd;
 const invertCondition = common.invertCondition;

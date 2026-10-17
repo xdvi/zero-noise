@@ -16,7 +16,7 @@ pub fn computeFileBlastRisk(
     if (lang == .unknown) return .low;
 
     const funcs = deps.calculateComplexity(allocator, content, lang) catch return .low;
-    defer allocator.free(funcs);
+    defer { for (funcs) |f| f.deinit(allocator); allocator.free(funcs); }
 
     if (funcs.len == 0) return .low;
 

@@ -143,14 +143,6 @@ pub fn executeSafeRefactor(
         };
     }
 
-    if (std.mem.eql(u8, original_content, candidate)) {
-        return SafeRefactorResult{
-            .status = .verified,
-            .diff = diff,
-            .error_msg = null,
-        };
-    }
-
     const dirname = std.fs.path.dirname(options.filepath);
     const rand_val = io.getRandomToken();
     const pid = io.getProcessId();

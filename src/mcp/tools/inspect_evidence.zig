@@ -58,10 +58,12 @@ pub fn executeInspectEvidenceWithDeps(allocator: std.mem.Allocator, args: ?std.j
 
     var max_complexity: u32 = 0;
     if (lang != .unknown) {
-        const records = deps.calculateComplexity(allocator, content, lang) catch &.{};
-        defer allocator.free(records);
-        for (records) |r| {
-            if (r.complexity > max_complexity) max_complexity = r.complexity;
+        const records_opt = deps.calculateComplexity(allocator, content, lang) catch null;
+        defer if (records_opt) |recs| { for (recs) |r| r.deinit(allocator); allocator.free(recs); };
+        if (records_opt) |recs| {
+            for (recs) |r| {
+                if (r.complexity > max_complexity) max_complexity = r.complexity;
+            }
         }
     }
 

@@ -62,7 +62,7 @@ pub fn executeComplexityWithDeps(allocator: std.mem.Allocator, args: ?std.json.V
         defer allocator.free(content);
 
         const records = deps.calculateComplexity(allocator, content, lang) catch continue;
-        defer allocator.free(records);
+        defer { for (records) |r| r.deinit(allocator); allocator.free(records); }
 
         for (records) |rec| {
             if (rec.complexity >= threshold or std.mem.eql(u8, format, "json") or std.mem.eql(u8, format, "sarif")) {

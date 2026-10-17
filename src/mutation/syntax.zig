@@ -77,8 +77,24 @@ pub fn checkBalancedBrackets(content: []const u8) bool {
             continue;
         }
 
+        if (ch == '`') {
+            i += 1;
+            while (i < content.len and content[i] != '`') {
+                if (content[i] == '\\' and i + 1 < content.len) i += 2 else i += 1;
+            }
+            if (i < content.len) i += 1;
+            continue;
+        }
+
         if (ch == '/' and i + 1 < content.len and content[i + 1] == '/') {
             while (i < content.len and content[i] != '\n') : (i += 1) {}
+            continue;
+        }
+
+        if (ch == '/' and i + 1 < content.len and content[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < content.len and !(content[i] == '*' and content[i + 1] == '/')) : (i += 1) {}
+            if (i + 1 < content.len) i += 2;
             continue;
         }
 

@@ -7,6 +7,10 @@ pub const FunctionRecord = struct {
     line: u32,
     end_line: u32,
     complexity: u32,
+
+    pub fn deinit(self: FunctionRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+    }
 };
 
 pub fn calculateComplexity(
@@ -51,7 +55,7 @@ fn collectFunctions(
         walkNode(node, source, lang, 0, &score, true);
 
         try records.append(allocator, .{
-            .name = name,
+            .name = try allocator.dupe(u8, name),
             .line = start.row + 1,
             .end_line = end.row + 1,
             .complexity = score,
@@ -252,7 +256,7 @@ test "calculateComplexity - Go sample" {
     ;
 
     const funcs = try calculateComplexity(std.testing.allocator, source, .go);
-    defer std.testing.allocator.free(funcs);
+    defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
     try std.testing.expectEqual(@as(usize, 1), funcs.len);
     try std.testing.expectEqualStrings("Process", funcs[0].name);
@@ -278,7 +282,7 @@ test "calculateComplexity - Python sample" {
     ;
 
     const funcs = try calculateComplexity(std.testing.allocator, source, .python);
-    defer std.testing.allocator.free(funcs);
+    defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
     try std.testing.expectEqual(@as(usize, 1), funcs.len);
     try std.testing.expectEqualStrings("compute_score", funcs[0].name);
@@ -308,7 +312,7 @@ test "calculateComplexity - TypeScript sample with optional chaining" {
     ;
 
     const funcs = try calculateComplexity(std.testing.allocator, source, .typescript);
-    defer std.testing.allocator.free(funcs);
+    defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
     try std.testing.expectEqual(@as(usize, 1), funcs.len);
     try std.testing.expectEqualStrings("handleData", funcs[0].name);
@@ -330,7 +334,7 @@ test "calculateComplexity - C# sample with nullable types and null conditional" 
     ;
 
     const funcs = try calculateComplexity(std.testing.allocator, source, .c_sharp);
-    defer std.testing.allocator.free(funcs);
+    defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
     try std.testing.expectEqual(@as(usize, 1), funcs.len);
     try std.testing.expectEqualStrings("Process", funcs[0].name);
@@ -352,7 +356,7 @@ test "calculateComplexity - outer function does not double-count inner function 
     ;
 
     const funcs = try calculateComplexity(std.testing.allocator, source, .typescript);
-    defer std.testing.allocator.free(funcs);
+    defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
     try std.testing.expectEqual(@as(usize, 2), funcs.len);
     try std.testing.expectEqualStrings("outer", funcs[0].name);
@@ -375,7 +379,7 @@ test "calculateComplexity - C# and TypeScript constructors resolve name instead 
         ;
 
         const funcs = try calculateComplexity(std.testing.allocator, source, .typescript);
-        defer std.testing.allocator.free(funcs);
+        defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
         try std.testing.expectEqual(@as(usize, 1), funcs.len);
         try std.testing.expectEqualStrings("constructor", funcs[0].name);
@@ -395,7 +399,7 @@ test "calculateComplexity - C# and TypeScript constructors resolve name instead 
         ;
 
         const funcs = try calculateComplexity(std.testing.allocator, source, .c_sharp);
-        defer std.testing.allocator.free(funcs);
+        defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
         try std.testing.expectEqual(@as(usize, 1), funcs.len);
         try std.testing.expect(std.mem.eql(u8, funcs[0].name, "OrderProcessor") or std.mem.eql(u8, funcs[0].name, "constructor"));
@@ -417,7 +421,7 @@ test "calculateComplexity - Python and C# nested functions do not double count" 
         ;
 
         const funcs = try calculateComplexity(std.testing.allocator, source, .python);
-        defer std.testing.allocator.free(funcs);
+        defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
         try std.testing.expectEqual(@as(usize, 2), funcs.len);
         try std.testing.expectEqualStrings("outer", funcs[0].name);
@@ -440,7 +444,7 @@ test "calculateComplexity - Python and C# nested functions do not double count" 
         ;
 
         const funcs = try calculateComplexity(std.testing.allocator, source, .c_sharp);
-        defer std.testing.allocator.free(funcs);
+        defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
         try std.testing.expectEqual(@as(usize, 2), funcs.len);
         try std.testing.expectEqualStrings("Run", funcs[0].name);
@@ -465,7 +469,7 @@ test "calculateComplexity - Go method with receiver name resolution" {
     ;
 
     const funcs = try calculateComplexity(std.testing.allocator, source, .go);
-    defer std.testing.allocator.free(funcs);
+    defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
     try std.testing.expectEqual(@as(usize, 1), funcs.len);
     try std.testing.expectEqualStrings("Execute", funcs[0].name);
@@ -484,7 +488,7 @@ test "calculateComplexity - Python elif does not double nest" {
     ;
 
     const funcs = try calculateComplexity(std.testing.allocator, source, .python);
-    defer std.testing.allocator.free(funcs);
+    defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
     try std.testing.expectEqual(@as(usize, 1), funcs.len);
     try std.testing.expectEqualStrings("check", funcs[0].name);
@@ -501,7 +505,7 @@ test "calculateComplexity - TypeScript arrow function in variable_declarator" {
     ;
 
     const funcs = try calculateComplexity(std.testing.allocator, source, .typescript);
-    defer std.testing.allocator.free(funcs);
+    defer { for (funcs) |f| f.deinit(std.testing.allocator); std.testing.allocator.free(funcs); }
 
     try std.testing.expectEqual(@as(usize, 1), funcs.len);
     try std.testing.expectEqualStrings("check", funcs[0].name);

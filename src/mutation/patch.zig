@@ -42,9 +42,9 @@ pub fn applyPatch(allocator: std.mem.Allocator, original: []const u8, patch_cont
         if (pline.len > 0 and pline[0] == '+') {
             try result_lines.append(allocator, pline[1..]);
         } else if (pline.len > 0 and pline[0] == '-') {
-            if (orig_idx < orig_lines.items.len) {
-                orig_idx += 1;
-            }
+            if (orig_idx >= orig_lines.items.len) return error.PatchContextMismatch;
+            if (!std.mem.eql(u8, orig_lines.items[orig_idx], pline[1..])) return error.PatchContextMismatch;
+            orig_idx += 1;
         } else if (pline.len > 0 and pline[0] == ' ') {
             if (orig_idx >= orig_lines.items.len) return error.PatchContextMismatch;
             if (!std.mem.eql(u8, orig_lines.items[orig_idx], pline[1..])) return error.PatchContextMismatch;

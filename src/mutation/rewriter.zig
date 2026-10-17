@@ -17,8 +17,26 @@ pub fn rewrite(allocator: std.mem.Allocator, source: []const u8) !RewriteResult 
 
     var total_changes: usize = 0;
     var pass: usize = 0;
+    var seen_hashes: [10][32]u8 = undefined;
+    var seen_count: usize = 0;
 
     while (pass < 10) : (pass += 1) {
+        var sha = std.crypto.hash.sha2.Sha256.init(.{});
+        sha.update(current);
+        var cur_hash: [32]u8 = undefined;
+        sha.final(&cur_hash);
+
+        var already_seen = false;
+        for (seen_hashes[0..seen_count]) |h| {
+            if (std.mem.eql(u8, &h, &cur_hash)) {
+                already_seen = true;
+                break;
+            }
+        }
+        if (already_seen) break;
+        seen_hashes[seen_count] = cur_hash;
+        seen_count += 1;
+
         var changed_in_pass = false;
 
         const ternary_res = try ternaries.rewriteTernaries(allocator, current);
