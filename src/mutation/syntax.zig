@@ -55,8 +55,7 @@ pub fn checkBalancedBrackets(content: []const u8) bool {
 
 fn validateWithTreeSitter(lang: grammars.Language, original: []const u8, candidate: []const u8) bool {
     const ts_lang = lang.getTsLanguage() orelse return false;
-    var parser = treesitter.Parser.init() catch return false;
-    defer parser.deinit();
+    var parser = treesitter.getThreadParser() catch return false;
     if (!parser.setLanguage(ts_lang)) return false;
 
     var cand_tree = parser.parseString(candidate) catch return false;

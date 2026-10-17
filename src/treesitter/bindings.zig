@@ -95,7 +95,12 @@ pub const Parser = struct {
     }
 
     pub fn setLanguage(self: *Parser, lang: *const TSLanguage) bool {
+        if (ts_parser_language(self.handle) == lang) return true;
         return ts_parser_set_language(self.handle, lang);
+    }
+
+    pub fn reset(self: *Parser) void {
+        ts_parser_reset(self.handle);
     }
 
     pub fn parseString(self: *Parser, source: []const u8) !Tree {
@@ -103,6 +108,23 @@ pub const Parser = struct {
         return Tree{ .handle = tree_ptr };
     }
 };
+
+threadlocal var thread_parser: ?Parser = null;
+
+pub fn getThreadParser() !*Parser {
+    if (thread_parser == null) {
+        thread_parser = try Parser.init();
+    }
+    return &thread_parser.?;
+}
+
+pub fn deinitThreadParser() void {
+    if (thread_parser) |*p| {
+        p.deinit();
+        thread_parser = null;
+    }
+}
+
 
 pub const Tree = struct {
     handle: *TSTree,
@@ -145,6 +167,8 @@ pub const TSTreeCursor = extern struct {
 pub extern "c" fn ts_parser_new() ?*TSParser;
 pub extern "c" fn ts_parser_delete(parser: ?*TSParser) void;
 pub extern "c" fn ts_parser_set_language(parser: ?*TSParser, language: ?*const TSLanguage) bool;
+pub extern "c" fn ts_parser_language(parser: ?*const TSParser) ?*const TSLanguage;
+pub extern "c" fn ts_parser_reset(parser: ?*TSParser) void;
 pub extern "c" fn ts_parser_parse_string(parser: ?*TSParser, old_tree: ?*const TSTree, string: [*]const u8, length: u32) ?*TSTree;
 pub extern "c" fn ts_tree_delete(tree: ?*TSTree) void;
 pub extern "c" fn ts_tree_root_node(tree: ?*const TSTree) TSNode;
@@ -188,3 +212,24 @@ test "tree sitter error detection" {
     defer invalid_tree.deinit();
     try std.testing.expect(invalid_tree.rootNode().hasError());
 }
+
+test "reusable thread parser parses and switches languages cleanly" {
+    const grammars = @import("grammars.zig");
+    const ts_lang = grammars.Language.typescript.getTsLanguage().?;
+    const go_lang = grammars.Language.go.getTsLanguage().?;
+
+    var p = try getThreadParser();
+    defer deinitThreadParser();
+
+    try std.testing.expect(p.setLanguage(ts_lang));
+    var tree_ts = try p.parseString("function add(a: number, b: number): number { return a + b; }");
+    defer tree_ts.deinit();
+    try std.testing.expect(!tree_ts.rootNode().hasError());
+
+    // Switch language on the same parser instance without reallocating
+    try std.testing.expect(p.setLanguage(go_lang));
+    var tree_go = try p.parseString("package main\nfunc add(a int, b int) int { return a + b }");
+    defer tree_go.deinit();
+    try std.testing.expect(!tree_go.rootNode().hasError());
+}
+

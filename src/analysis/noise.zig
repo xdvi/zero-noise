@@ -56,9 +56,7 @@ pub fn auditNoiseWithOptions(
         return cached;
     }
 
-    var parser = try bindings.Parser.init();
-    defer parser.deinit();
-
+    var parser = try bindings.getThreadParser();
     if (!parser.setLanguage(ts_lang)) return error.SetLanguageFailed;
 
     var tree = try parser.parseString(source);

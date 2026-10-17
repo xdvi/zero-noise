@@ -165,9 +165,7 @@ pub fn scanFileReferences(
     const ts_lang = lang.getTsLanguage();
 
     if (ts_lang) |tl| {
-        var parser = bindings.Parser.init() catch return scanByLines(allocator, file_path, content, symbol);
-        defer parser.deinit();
-
+        var parser = bindings.getThreadParser() catch return scanByLines(allocator, file_path, content, symbol);
         if (parser.setLanguage(tl)) {
             if (parser.parseString(content)) |tree| {
                 var mutable_tree = tree;
@@ -643,9 +641,7 @@ fn parseOneFile(f: FileInput) ParsedFile {
     const lang = grammars.Language.fromPath(f.path);
     var parsed_tree: ?bindings.Tree = null;
     if (lang.getTsLanguage()) |tl| {
-        if (bindings.Parser.init()) |parser_inst| {
-            var parser = parser_inst;
-            defer parser.deinit();
+        if (bindings.getThreadParser()) |parser| {
             if (parser.setLanguage(tl)) {
                 parsed_tree = parser.parseString(f.content) catch null;
             }
