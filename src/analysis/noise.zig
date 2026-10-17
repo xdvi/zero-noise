@@ -467,27 +467,8 @@ fn scanLiterals(
     if (node.isNull()) return;
 
     const t = node.getType();
-    if (isStringLiteralNode(t)) {
-        if (!isIgnoredLiteralContext(node)) {
-            const raw = node.slice(source);
-            if (extractStringLiteralContent(raw)) |inner| {
-                if (inner.len >= 4) {
-                    const pt = node.startPoint();
-                    const owned = try allocator.dupe(u8, inner);
-                    errdefer allocator.free(owned);
-                    if (map.getEntry(owned)) |entry| {
-                        allocator.free(owned);
-                        entry.value_ptr.count += 1;
-                    } else {
-                        try map.put(owned, .{
-                            .count = 1,
-                            .line = pt.row + 1,
-                            .col = pt.column + 1,
-                        });
-                    }
-                }
-            }
-        }
+    if (isStringLiteralNode(t) and !isIgnoredLiteralContext(node)) {
+        try scanLiteralNode(allocator, node, source, map);
     }
 
     var i: u32 = 0;
@@ -1262,4 +1243,28 @@ fn findFirstCodePoint(comments: []bindings.TSNode, start: usize, end: usize, sou
         }
     }
     return null;
+}
+
+fn scanLiteralNode(
+    allocator: std.mem.Allocator,
+    node: bindings.TSNode,
+    source: []const u8,
+    map: *std.StringHashMap(LiteralOccur),
+) !void {
+    const raw = node.slice(source);
+    const inner = extractStringLiteralContent(raw) orelse return;
+    if (inner.len < 4) return;
+    const pt = node.startPoint();
+    const owned = try allocator.dupe(u8, inner);
+    errdefer allocator.free(owned);
+    if (map.getEntry(owned)) |entry| {
+        allocator.free(owned);
+        entry.value_ptr.count += 1;
+    } else {
+        try map.put(owned, .{
+            .count = 1,
+            .line = pt.row + 1,
+            .col = pt.column + 1,
+        });
+    }
 }
