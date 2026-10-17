@@ -15,44 +15,19 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8, io: std.Io, s
 }
 
 pub fn executeRefactor(allocator: std.mem.Allocator, args: []const []const u8, out_list: *std.ArrayList(u8)) !u8 {
-    var format: []const u8 = "text";
-    var file_opt: ?[]const u8 = null;
-    var fix = false;
-    var expected_hash: ?[]const u8 = null;
-    var test_cmd: ?[]const u8 = null;
+    const parsed = parseRefactorArgs(args);
+    const file = parsed.file orelse return 1;
 
-    for (args) |arg| {
-        if (std.mem.startsWith(u8, arg, "--format=")) {
-            format = arg["--format=".len..];
-        } else if (std.mem.startsWith(u8, arg, "--expected-hash=")) {
-            expected_hash = arg["--expected-hash=".len..];
-        } else if (std.mem.startsWith(u8, arg, "--test-cmd=")) {
-            test_cmd = arg["--test-cmd=".len..];
-        } else if (std.mem.eql(u8, arg, "--fix")) {
-            fix = true;
-        } else if (std.mem.eql(u8, arg, "--dry-run")) {
-            fix = false;
-        } else if (!std.mem.startsWith(u8, arg, "-")) {
-            if (file_opt == null) {
-                file_opt = arg;
-            }
-        }
-    }
-
-    const file = file_opt orelse return 1;
-
-    var json_args = std.json.Value{
-        .object = .empty,
-    };
+    var json_args = std.json.Value{ .object = .empty };
     defer json_args.object.deinit(allocator);
 
     try json_args.object.put(allocator, "filepath", std.json.Value{ .string = file });
-    try json_args.object.put(allocator, "fix", std.json.Value{ .bool = fix });
-    try json_args.object.put(allocator, "format", std.json.Value{ .string = format });
-    if (expected_hash) |eh| {
+    try json_args.object.put(allocator, "fix", std.json.Value{ .bool = parsed.fix });
+    try json_args.object.put(allocator, "format", std.json.Value{ .string = parsed.format });
+    if (parsed.expected_hash) |eh| {
         try json_args.object.put(allocator, "expected_hash", std.json.Value{ .string = eh });
     }
-    if (test_cmd) |tc| {
+    if (parsed.test_cmd) |tc| {
         try json_args.object.put(allocator, "test_cmd", std.json.Value{ .string = tc });
     }
 
@@ -65,6 +40,38 @@ pub fn executeRefactor(allocator: std.mem.Allocator, args: []const []const u8, o
     }
 
     return if (res.is_error) 1 else 0;
+}
+
+const RefactorArgs = struct {
+    format: []const u8 = "text",
+    file: ?[]const u8 = null,
+    fix: bool = false,
+    expected_hash: ?[]const u8 = null,
+    test_cmd: ?[]const u8 = null,
+};
+
+fn parseRefactorArgs(args: []const []const u8) RefactorArgs {
+    var parsed = RefactorArgs{};
+    for (args) |arg| {
+        applyRefactorArg(&parsed, arg);
+    }
+    return parsed;
+}
+
+fn applyRefactorArg(parsed: *RefactorArgs, arg: []const u8) void {
+    if (std.mem.startsWith(u8, arg, "--format=")) {
+        parsed.format = arg["--format=".len..];
+    } else if (std.mem.startsWith(u8, arg, "--expected-hash=")) {
+        parsed.expected_hash = arg["--expected-hash=".len..];
+    } else if (std.mem.startsWith(u8, arg, "--test-cmd=")) {
+        parsed.test_cmd = arg["--test-cmd=".len..];
+    } else if (std.mem.eql(u8, arg, "--fix")) {
+        parsed.fix = true;
+    } else if (std.mem.eql(u8, arg, "--dry-run")) {
+        parsed.fix = false;
+    } else if (!std.mem.startsWith(u8, arg, "-")) {
+        if (parsed.file == null) parsed.file = arg;
+    }
 }
 
 test "refactor cli execution" {
