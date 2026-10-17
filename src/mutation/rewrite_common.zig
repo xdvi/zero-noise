@@ -10,8 +10,18 @@ pub const RewriteResult = struct {
 };
 
 pub fn isIdentChar(ch: u8) bool {
-    return std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '$';
+    return ident_char_table[ch];
 }
+
+const ident_char_table = blk: {
+    var t: [256]bool = undefined;
+    var i: usize = 0;
+    while (i < 256) : (i += 1) {
+        const c: u8 = @intCast(i);
+        t[i] = std.ascii.isAlphanumeric(c) or c == '_' or c == '$';
+    }
+    break :blk t;
+};
 
 pub fn skipWhitespace(src: []const u8, start: usize) usize {
     var i = start;

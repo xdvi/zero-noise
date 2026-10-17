@@ -2,6 +2,13 @@ const std = @import("std");
 const common = @import("common.zig");
 const compact = @import("compact.zig");
 
+const JSON_PATH = "{\"path\":";
+const JSON_FILE = "{\"file\":";
+const JSON_RULE = ",\"rule\":";
+const JSON_LINE = ",\"line\":";
+const JSON_COLUMN = ",\"column\":";
+const JSON_MESSAGE = ",\"message\":";
+
 pub fn auditNoise(
     allocator: std.mem.Allocator,
     path: []const u8,
