@@ -34,12 +34,8 @@ pub fn executeRefactorHelperWithDeps(allocator: std.mem.Allocator, args: ?std.js
     }
     defer if (findings.len > 0) noise.deinitFindings(allocator, findings);
 
-    var repeated_count: usize = 0;
-    var ternary_count: usize = 0;
-    for (findings) |f| {
-        if (f.rule == .repeated_literal) repeated_count += 1;
-        if (f.rule == .redundant_ternary) ternary_count += 1;
-    }
+    const repeated_count = countFindings(findings, .repeated_literal);
+    const ternary_count = countFindings(findings, .redundant_ternary);
 
     const simplified = deps.simplify(allocator, content) catch null;
     defer if (simplified) |s| allocator.free(s);
@@ -51,6 +47,21 @@ pub fn executeRefactorHelperWithDeps(allocator: std.mem.Allocator, args: ?std.js
         return ToolResult{ .text = text, .is_error = false };
     }
 
+    const text = try buildRefactorHelperText(allocator, filepath, findings, has_algebraic);
+    return ToolResult{ .text = text, .is_error = false };
+}
+
+
+
+fn countFindings(findings: []noise.NoiseFinding, rule: noise.NoiseRule) usize {
+    var count: usize = 0;
+    for (findings) |f| {
+        if (f.rule == rule) count += 1;
+    }
+    return count;
+}
+
+fn buildRefactorHelperText(allocator: std.mem.Allocator, filepath: []const u8, findings: []noise.NoiseFinding, has_algebraic: bool) ![]u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try buf.print(allocator, "Refactor Helper ({s}):\n", .{filepath});
@@ -62,8 +73,7 @@ pub fn executeRefactorHelperWithDeps(allocator: std.mem.Allocator, args: ?std.js
     if (has_algebraic) {
         try buf.appendSlice(allocator, "  Boolean simplification candidate detected: algebraic reduction available via safe_refactor.\n");
     }
-
-    return ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false };
+    return buf.toOwnedSlice(allocator);
 }
 
 pub fn executeRefactorHelper(allocator: std.mem.Allocator, args: ?std.json.Value) !ToolResult {
