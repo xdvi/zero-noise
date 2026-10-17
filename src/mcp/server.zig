@@ -115,14 +115,7 @@ fn handleToolCallMethod(
     var tool_name: []const u8 = "";
     var arguments: ?std.json.Value = null;
 
-    if (params_val) |pv| {
-        if (pv == .object) {
-            if (pv.object.get("name")) |nv| {
-                if (nv == .string) tool_name = nv.string;
-            }
-            arguments = pv.object.get("arguments");
-        }
-    }
+    parseToolCallParams(params_val, &tool_name, &arguments);
 
     const tool_result = app.executeToolCallWithDeps(allocator, tool_name, arguments, deps_ptr) catch |err| {
         const err_msg = try std.fmt.allocPrint(allocator, "Tool execution error: {s}", .{@errorName(err)});
@@ -151,15 +144,29 @@ fn processRequestLine(allocator: std.mem.Allocator, io: std.Io, stdout: std.Io.F
 
     const default_deps = deps_mod.defaultDeps();
     const maybe_resp = handleJsonRpcLineWithDeps(req_alloc, line, &default_deps) catch |err| {
-        const err_resp = protocol.buildErrorResponseJson(req_alloc, .null_id, protocol.ErrorCodes.InternalError, @errorName(err)) catch null;
-        if (err_resp) |resp| {
-            stdout.writeStreamingAll(io, resp) catch {};
-            stdout.writeStreamingAll(io, "\n") catch {};
-        }
+        writeErrorResponse(req_alloc, io, stdout, err);
         return;
     };
     if (maybe_resp) |resp| {
         try stdout.writeStreamingAll(io, resp);
         try stdout.writeStreamingAll(io, "\n");
+    }
+}
+
+fn parseToolCallParams(params_val: ?std.json.Value, tool_name: *[]const u8, arguments: *?std.json.Value) void {
+    const pv = params_val orelse return;
+    if (pv != .object) return;
+    if (pv.object.get("name")) |nv| {
+        if (nv == .string) tool_name.* = nv.string;
+    }
+    arguments.* = pv.object.get("arguments");
+}
+
+
+fn writeErrorResponse(allocator: std.mem.Allocator, io: std.Io, stdout: std.Io.File, err: anyerror) void {
+    const err_resp = protocol.buildErrorResponseJson(allocator, .null_id, protocol.ErrorCodes.InternalError, @errorName(err)) catch null;
+    if (err_resp) |resp| {
+        stdout.writeStreamingAll(io, resp) catch {};
+        stdout.writeStreamingAll(io, "\n") catch {};
     }
 }

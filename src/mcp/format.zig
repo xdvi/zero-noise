@@ -242,19 +242,7 @@ pub fn evaluateRules(
         try buf.appendSlice(allocator, "{\"path\":");
         try common.appendJsonEscaped(&buf, allocator, path);
         try buf.appendSlice(allocator, ",\"violations\":[");
-        for (items, 0..) |item, idx| {
-            if (idx > 0) try buf.append(allocator, ',');
-            try buf.appendSlice(allocator, "{\"file\":");
-            try common.appendJsonEscaped(&buf, allocator, item.file);
-            try buf.appendSlice(allocator, ",\"rule\":");
-            try common.appendJsonEscaped(&buf, allocator, item.rule);
-            try buf.print(allocator, ",\"line\":{d},\"column\":{d},\"message\":", .{
-                item.line,
-                item.column,
-            });
-            try common.appendJsonEscaped(&buf, allocator, item.message);
-            try buf.append(allocator, '}');
-        }
+        try appendEvaluateRulesJsonViolations(&buf, allocator, items);
         try buf.print(allocator, "],\"total_noise\":{d}}}", .{items.len});
         return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = items.len };
     }
@@ -348,4 +336,21 @@ fn riskUpper(risk: []const u8) []const u8 {
     if (std.mem.eql(u8, risk, "medium")) return "MEDIUM";
     if (std.mem.eql(u8, risk, "high")) return "HIGH";
     return risk;
+}
+
+
+fn appendEvaluateRulesJsonViolations(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, items: anytype) !void {
+    for (items, 0..) |item, idx| {
+        if (idx > 0) try buf.append(allocator, ',');
+        try buf.appendSlice(allocator, "{\"file\":");
+        try common.appendJsonEscaped(buf, allocator, item.file);
+        try buf.appendSlice(allocator, ",\"rule\":");
+        try common.appendJsonEscaped(buf, allocator, item.rule);
+        try buf.print(allocator, ",\"line\":{d},\"column\":{d},\"message\":", .{
+            item.line,
+            item.column,
+        });
+        try common.appendJsonEscaped(buf, allocator, item.message);
+        try buf.append(allocator, '}');
+    }
 }
