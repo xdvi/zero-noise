@@ -114,75 +114,86 @@ pub fn complexity(
     const items = if (@hasField(@TypeOf(findings), "items")) findings.items else findings;
 
     if (compact.isCompact(format)) {
-        if (exceeded_count == 0) {
-            const text = try compact.formatComplexity(allocator, path, 1, "all_functions", 0, threshold);
-            return common.ToolResult{ .text = text, .is_error = false, .count = 0 };
-        }
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        for (items) |item| {
-            if (item.complexity >= threshold) {
-                const line = try compact.formatComplexity(allocator, item.file, item.line, item.name, item.complexity, threshold);
-                defer allocator.free(line);
-                try buf.appendSlice(allocator, line);
-                try buf.append(allocator, '\n');
-            }
-        }
-        return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = exceeded_count };
+        return formatComplexityCompact(allocator, path, threshold, items, exceeded_count);
     }
-
     if (std.mem.eql(u8, format, "sarif")) {
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        try buf.appendSlice(allocator, "{\"$schema\":\"https://json.schemastore.org/sarif-2.1.0.json\",\"version\":\"2.1.0\",\"runs\":[{\"tool\":{\"driver\":{\"name\":\"zero-noise\",\"version\":\"0.1.0\"}},\"results\":[");
-        var first = true;
-        for (items) |item| {
-            if (item.complexity >= threshold) {
-                if (!first) try buf.append(allocator, ',');
-                first = false;
-                const msg = try std.fmt.allocPrint(allocator, "Function '{s}' cognitive complexity {d} exceeds threshold {d}", .{ item.name, item.complexity, threshold });
-                defer allocator.free(msg);
-
-                try buf.appendSlice(allocator, "{\"ruleId\":\"cognitive-complexity\",\"message\":{\"text\":");
-                try common.appendJsonEscaped(&buf, allocator, msg);
-                try buf.appendSlice(allocator, "},\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":");
-                try common.appendJsonEscaped(&buf, allocator, item.file);
-                try buf.appendSlice(allocator, "},\"region\":{\"startLine\":");
-                try buf.print(allocator, "{d}", .{item.line});
-                try buf.appendSlice(allocator, ",\"endLine\":");
-                try buf.print(allocator, "{d}", .{item.end_line});
-                try buf.appendSlice(allocator, "}}}]}");
-            }
-        }
-        try buf.appendSlice(allocator, "]}]}");
-        return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = exceeded_count };
+        return formatComplexitySarif(allocator, path, threshold, items, exceeded_count);
     }
-
     if (std.mem.eql(u8, format, "json")) {
-        var buf: std.ArrayList(u8) = .empty;
-        defer buf.deinit(allocator);
-        try buf.appendSlice(allocator, "{\"path\":");
-        try common.appendJsonEscaped(&buf, allocator, path);
-        try buf.print(allocator, ",\"threshold\":{d},\"functions\":[", .{threshold});
-        for (items, 0..) |item, idx| {
-            if (idx > 0) try buf.append(allocator, ',');
-            try buf.appendSlice(allocator, "{\"file\":");
-            try common.appendJsonEscaped(&buf, allocator, item.file);
-            try buf.appendSlice(allocator, ",\"name\":");
-            try common.appendJsonEscaped(&buf, allocator, item.name);
-            try buf.print(allocator, ",\"line\":{d},\"end_line\":{d},\"complexity\":{d}}}", .{
-                item.line, item.end_line, item.complexity,
-            });
-        }
-        try buf.print(allocator, "],\"exceeded\":{d}}}", .{exceeded_count});
-        return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = exceeded_count };
+        return formatComplexityJson(allocator, path, threshold, items, exceeded_count);
     }
+    return formatComplexityText(allocator, path, threshold, items, exceeded_count);
+}
 
+fn formatComplexityCompact(allocator: std.mem.Allocator, path: []const u8, threshold: u32, items: anytype, exceeded_count: usize) !common.ToolResult {
+    if (exceeded_count == 0) {
+        const text = try compact.formatComplexity(allocator, path, 1, "all_functions", 0, threshold);
+        return common.ToolResult{ .text = text, .is_error = false, .count = 0 };
+    }
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    for (items) |item| {
+        if (item.complexity >= threshold) {
+            const line = try compact.formatComplexity(allocator, item.file, item.line, item.name, item.complexity, threshold);
+            defer allocator.free(line);
+            try buf.appendSlice(allocator, line);
+            try buf.append(allocator, '\n');
+        }
+    }
+    return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = exceeded_count };
+}
+
+fn formatComplexitySarif(allocator: std.mem.Allocator, path: []const u8, threshold: u32, items: anytype, exceeded_count: usize) !common.ToolResult {
+    _ = path;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "{\"$schema\":\"https://json.schemastore.org/sarif-2.1.0.json\",\"version\":\"2.1.0\",\"runs\":[{\"tool\":{\"driver\":{\"name\":\"zero-noise\",\"version\":\"0.1.0\"}},\"results\":[");
+    var first = true;
+    for (items) |item| {
+        if (item.complexity < threshold) continue;
+        if (!first) try buf.append(allocator, ',');
+        first = false;
+        const msg = try std.fmt.allocPrint(allocator, "Function '{s}' cognitive complexity {d} exceeds threshold {d}", .{ item.name, item.complexity, threshold });
+        defer allocator.free(msg);
+        try buf.appendSlice(allocator, "{\"ruleId\":\"cognitive-complexity\",\"message\":{\"text\":");
+        try common.appendJsonEscaped(&buf, allocator, msg);
+        try buf.appendSlice(allocator, "},\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":");
+        try common.appendJsonEscaped(&buf, allocator, item.file);
+        try buf.appendSlice(allocator, "},\"region\":{\"startLine\":");
+        try buf.print(allocator, "{d}", .{item.line});
+        try buf.appendSlice(allocator, ",\"endLine\":");
+        try buf.print(allocator, "{d}", .{item.end_line});
+        try buf.appendSlice(allocator, "}}}]}");
+    }
+    try buf.appendSlice(allocator, "]}]}");
+    return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = exceeded_count };
+}
+
+fn formatComplexityJson(allocator: std.mem.Allocator, path: []const u8, threshold: u32, items: anytype, exceeded_count: usize) !common.ToolResult {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, "{\"path\":");
+    try common.appendJsonEscaped(&buf, allocator, path);
+    try buf.print(allocator, ",\"threshold\":{d},\"functions\":[", .{threshold});
+    for (items, 0..) |item, idx| {
+        if (idx > 0) try buf.append(allocator, ',');
+        try buf.appendSlice(allocator, "{\"file\":");
+        try common.appendJsonEscaped(&buf, allocator, item.file);
+        try buf.appendSlice(allocator, ",\"name\":");
+        try common.appendJsonEscaped(&buf, allocator, item.name);
+        try buf.print(allocator, ",\"line\":{d},\"end_line\":{d},\"complexity\":{d}}}", .{
+            item.line, item.end_line, item.complexity,
+        });
+    }
+    try buf.print(allocator, "],\"exceeded\":{d}}}", .{exceeded_count});
+    return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = exceeded_count };
+}
+
+fn formatComplexityText(allocator: std.mem.Allocator, path: []const u8, threshold: u32, items: anytype, exceeded_count: usize) !common.ToolResult {
     if (exceeded_count == 0) {
         const text = try std.fmt.allocPrint(allocator, "Cognitive Complexity: {s} - 0 functions exceed threshold {d}.", .{ path, threshold });
         return common.ToolResult{ .text = text, .is_error = false, .count = 0 };
     }
-
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try buf.print(allocator, "Cognitive Complexity: {s} - {d} function(s) exceed threshold {d}:\n", .{ path, exceeded_count, threshold });
@@ -201,7 +212,6 @@ pub fn complexity(
     }
     return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = exceeded_count };
 }
-
 pub fn evaluateRules(
     allocator: std.mem.Allocator,
     path: []const u8,
@@ -268,6 +278,7 @@ pub fn evaluateRules(
     }
     return common.ToolResult{ .text = try buf.toOwnedSlice(allocator), .is_error = false, .count = items.len };
 }
+
 
 pub fn blastRadius(
     allocator: std.mem.Allocator,
