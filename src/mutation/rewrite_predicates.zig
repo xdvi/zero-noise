@@ -44,12 +44,24 @@ fn syntaxFor(lang: grammars.Language) ?Syntax {
             .scope_nodes = &.{"function_declaration"},
             .boundary_nodes = &.{ "method_definition", "arrow_function", "function_expression", "generator_function_declaration" },
         },
+        .python => .{
+            .if_nodes = &.{"if_statement"},
+            .chain_node = "boolean_operator",
+            .member_node = "attribute",
+            .object_field = "object",
+            .property_field = "attribute",
+            .property_node = "identifier",
+            .unwrap_condition_parens = true,
+            .typed_roots = false,
+            .scope_nodes = &.{"function_definition"},
+            .boundary_nodes = &.{"lambda"},
+        },
         else => null,
     };
 }
 
 pub fn supportedLanguages() []const grammars.Language {
-    return &.{ .typescript, .tsx };
+    return &.{ .typescript, .tsx, .python };
 }
 
 const Root = struct {
@@ -213,17 +225,32 @@ fn appendExtraction(
     name: []const u8,
     roots: []const Root,
 ) !void {
+    const indent = lineIndent(ctx.source, fn_node.startByte());
+
     var replacement: std.ArrayList(u8) = .empty;
     defer replacement.deinit(ctx.allocator);
 
-    try replacement.appendSlice(ctx.allocator, lineIndent(ctx.source, fn_node.startByte()));
-    try replacement.appendSlice(ctx.allocator, "function ");
-    try replacement.appendSlice(ctx.allocator, name);
-    try replacement.append(ctx.allocator, '(');
-    try appendParams(ctx.allocator, &replacement, roots);
-    try replacement.appendSlice(ctx.allocator, "): boolean { return ");
-    try replacement.appendSlice(ctx.allocator, condition.slice(ctx.source));
-    try replacement.appendSlice(ctx.allocator, "; }\n");
+    try replacement.appendSlice(ctx.allocator, indent);
+    if (ctx.lang == .python) {
+        try replacement.appendSlice(ctx.allocator, "def ");
+        try replacement.appendSlice(ctx.allocator, name);
+        try replacement.append(ctx.allocator, '(');
+        try appendParams(ctx.allocator, &replacement, roots);
+        try replacement.appendSlice(ctx.allocator, "):\n");
+        try replacement.appendSlice(ctx.allocator, indent);
+        try replacement.appendSlice(ctx.allocator, pythonIndentUnit(ctx, fn_node, indent.len));
+        try replacement.appendSlice(ctx.allocator, "return ");
+        try replacement.appendSlice(ctx.allocator, condition.slice(ctx.source));
+        try replacement.append(ctx.allocator, '\n');
+    } else {
+        try replacement.appendSlice(ctx.allocator, "function ");
+        try replacement.appendSlice(ctx.allocator, name);
+        try replacement.append(ctx.allocator, '(');
+        try appendParams(ctx.allocator, &replacement, roots);
+        try replacement.appendSlice(ctx.allocator, "): boolean { return ");
+        try replacement.appendSlice(ctx.allocator, condition.slice(ctx.source));
+        try replacement.appendSlice(ctx.allocator, "; }\n");
+    }
 
     var call: std.ArrayList(u8) = .empty;
     defer call.deinit(ctx.allocator);
@@ -234,9 +261,10 @@ fn appendExtraction(
 
     const proposal_edits = try ctx.allocator.alloc(edits.Edit, 2);
     errdefer ctx.allocator.free(proposal_edits);
+    const insert_at = lineStartOffset(ctx.source, fn_node.startByte());
     proposal_edits[0] = .{
-        .start = fn_node.startByte(),
-        .end = fn_node.startByte(),
+        .start = insert_at,
+        .end = insert_at,
         .replacement = try ctx.allocator.dupe(u8, replacement.items),
     };
     errdefer ctx.allocator.free(proposal_edits[0].replacement);
@@ -289,6 +317,17 @@ fn containsRoot(roots: []const Root, name: []const u8) bool {
         if (std.mem.eql(u8, root.name, name)) return true;
     }
     return false;
+}
+
+/// Indentation step used for the emitted Python `return`, taken from the
+/// enclosing function's first body statement, falling back to four spaces.
+fn pythonIndentUnit(ctx: *Context, fn_node: bindings.TSNode, fn_indent_len: usize) []const u8 {
+    const body = fn_node.childByFieldName("body");
+    if (!body.isNull() and body.namedChildCount() > 0) {
+        const statement_indent = lineIndent(ctx.source, body.namedChild(0).startByte());
+        if (statement_indent.len > fn_indent_len) return statement_indent[fn_indent_len..];
+    }
+    return "    ";
 }
 
 fn flattenChain(
@@ -463,6 +502,14 @@ fn lineIndent(source: []const u8, offset: u32) []const u8 {
         if (ch != ' ' and ch != '\t') return "";
     }
     return prefix;
+}
+
+fn lineStartOffset(source: []const u8, offset: u32) u32 {
+    const start: usize = offset;
+    if (start > source.len) return offset;
+    var line_start = start;
+    while (line_start > 0 and source[line_start - 1] != '\n') : (line_start -= 1) {}
+    return @intCast(line_start);
 }
 
 fn awardPredicateName(ctx: *Context, first_root: []const u8) ![]u8 {
@@ -812,4 +859,152 @@ test "non-chain conditions yield no proposal" {
     defer deinitProposals(allocator, proposals);
 
     try std.testing.expectEqual(@as(usize, 0), proposals.len);
+}
+
+test "probe python predicate node types" {
+    const source =
+        \\def is_ready(user, config):
+        \\    threshold = 3
+        \\    if user.is_active and user.has_paid and config.sorted:
+        \\        return True
+        \\    return False
+    ;
+    const py_lang = grammars.Language.python.getTsLanguage().?;
+    var parser = try bindings.getThreadParser();
+    defer bindings.deinitThreadParser();
+    try std.testing.expect(parser.setLanguage(py_lang));
+
+    var tree = try parser.parseString(source);
+    defer tree.deinit();
+
+    const fn_def = tree.rootNode().namedChild(0);
+    try std.testing.expectEqualStrings("function_definition", fn_def.getType());
+    try std.testing.expectEqualStrings("parameters", fn_def.childByFieldName("parameters").getType());
+
+    const body = fn_def.childByFieldName("body");
+    try std.testing.expectEqualStrings("block", body.getType());
+
+    const if_node = body.namedChild(1);
+    try std.testing.expectEqualStrings("if_statement", if_node.getType());
+    const condition = if_node.childByFieldName("condition");
+    try std.testing.expectEqualStrings("boolean_operator", condition.getType());
+
+    const left = condition.childByFieldName("left");
+    const right = condition.childByFieldName("right");
+    try std.testing.expectEqualStrings("user.is_active and user.has_paid", left.slice(source));
+    try std.testing.expectEqualStrings("config.sorted", right.slice(source));
+    try std.testing.expectEqualStrings("and", condition.child(1).slice(source));
+
+    const attribute = left.childByFieldName("left");
+    try std.testing.expectEqualStrings("attribute", attribute.getType());
+    try std.testing.expectEqualStrings("user", attribute.childByFieldName("object").slice(source));
+    try std.testing.expectEqualStrings("is_active", attribute.childByFieldName("attribute").slice(source));
+}
+
+test "extracts python predicate before the enclosing function" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\def is_ready(user):
+        \\    if user.is_active and user.has_paid:
+        \\        return True
+        \\    return False
+        \\
+    ;
+    const expected =
+        \\def is_user(user):
+        \\    return user.is_active and user.has_paid
+        \\def is_ready(user):
+        \\    if is_user(user):
+        \\        return True
+        \\    return False
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .python);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const p = proposals[0];
+    try std.testing.expectEqual(proposal.ProposalKind.predicate, p.kind);
+    try std.testing.expectEqualStrings("raw-boolean", p.rule);
+    try std.testing.expectEqual(proposal.Confidence.medium, p.confidence);
+    try std.testing.expect(p.naming_required);
+    try std.testing.expect(p.safe_to_apply);
+    try std.testing.expectEqual(@as(usize, 2), p.edits.len);
+    try std.testing.expectEqual(@as(u32, 2), p.line);
+    try std.testing.expectEqual(@as(u32, 5), p.col);
+    try std.testing.expect(std.mem.indexOf(u8, p.message, "is_user") != null);
+
+    const output = try applyProposal(allocator, source, p);
+    defer allocator.free(output);
+    try std.testing.expectEqualStrings(expected, output);
+}
+
+test "python nested predicate keeps body indentation" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\def outer(user):
+        \\    def inner(flag):
+        \\        if user.is_active and flag:
+        \\            return True
+        \\        return False
+        \\    return inner
+        \\
+    ;
+    const expected =
+        \\def outer(user):
+        \\    def is_user(user, flag):
+        \\        return user.is_active and flag
+        \\    def inner(flag):
+        \\        if is_user(user, flag):
+        \\            return True
+        \\        return False
+        \\    return inner
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .python);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    try std.testing.expect(proposals[0].safe_to_apply);
+
+    const output = try applyProposal(allocator, source, proposals[0]);
+    defer allocator.free(output);
+    try std.testing.expectEqualStrings(expected, output);
+}
+
+test "python await operand stays advisory" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\async def loader(user):
+        \\    if user.is_active and await user.fetch_flag():
+        \\        return True
+        \\    return False
+    ;
+
+    const proposals = try collectForTest(allocator, source, .python);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    try std.testing.expect(!proposals[0].safe_to_apply);
+    try std.testing.expectEqual(@as(usize, 0), proposals[0].edits.len);
+    try std.testing.expect(std.mem.indexOf(u8, proposals[0].message, "identifier or property chain") != null);
+}
+
+test "python mixed operators stay advisory" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\def evaluate(user, config):
+        \\    if user.is_active and config.sorted or user.is_admin:
+        \\        return True
+        \\    return False
+    ;
+
+    const proposals = try collectForTest(allocator, source, .python);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    try std.testing.expect(!proposals[0].safe_to_apply);
+    try std.testing.expect(std.mem.indexOf(u8, proposals[0].message, "non-uniform logical operators") != null);
 }
