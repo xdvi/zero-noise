@@ -203,6 +203,7 @@ configure_plugins() {
     AGY_DIR="$HOME/.gemini/config/plugins/zero-noise"
     mkdir -p "$(dirname "$AGY_DIR")"
     if [ -d "$ROOT_DIR" ]; then
+        rm -rf "$AGY_DIR"
         ln -sfn "$ROOT_DIR" "$AGY_DIR"
         echo "✔ Linked Antigravity plugin: $AGY_DIR"
     fi
@@ -211,6 +212,7 @@ configure_plugins() {
     OPENCODE_DIR="$HOME/.config/opencode"
     if [ -d "$OPENCODE_DIR" ]; then
         mkdir -p "$OPENCODE_DIR/skills" "$OPENCODE_DIR/commands" "$OPENCODE_DIR/agents"
+        rm -rf "$OPENCODE_DIR/skills/zero-noise-refactor"
         ln -sfn "$ROOT_DIR/skills/zero-noise-refactor" "$OPENCODE_DIR/skills/zero-noise-refactor"
         ln -sfn "$ROOT_DIR/commands/zero-noise.md" "$OPENCODE_DIR/commands/zero-noise.md"
         ln -sfn "$ROOT_DIR/agents/zero-noise-refactor.md" "$OPENCODE_DIR/agents/zero-noise-refactor.md"
@@ -221,6 +223,7 @@ configure_plugins() {
     CODEX_DIR="$HOME/.codex"
     if [ -d "$CODEX_DIR" ]; then
         mkdir -p "$CODEX_DIR/skills" "$CODEX_DIR/agents"
+        rm -rf "$CODEX_DIR/skills/zero-noise-refactor"
         ln -sfn "$ROOT_DIR/skills/zero-noise-refactor" "$CODEX_DIR/skills/zero-noise-refactor"
         ln -sfn "$ROOT_DIR/agents/zero-noise-refactor.md" "$CODEX_DIR/agents/zero-noise-refactor.md"
         echo "✔ Linked Codex skills and agent"
