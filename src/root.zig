@@ -17,6 +17,7 @@ pub const analysis = struct {
 };
 
 pub const mutation = struct {
+    pub const edits = @import("mutation/edits.zig");
     pub const runner = @import("mutation/runner.zig");
     pub const io = @import("mutation/io.zig");
     pub const patch = @import("mutation/patch.zig");
@@ -64,6 +65,7 @@ test {
     _ = @import("analysis/noise.zig");
     _ = @import("analysis/complexity.zig");
     _ = @import("analysis/blast.zig");
+    _ = @import("mutation/edits.zig");
     _ = @import("mutation/rewriter.zig");
     _ = @import("mutation/runner.zig");
     _ = @import("mutation/io.zig");
