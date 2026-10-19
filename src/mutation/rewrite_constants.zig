@@ -5,7 +5,7 @@ const proposal = @import("proposal.zig");
 const edits = @import("edits.zig");
 
 pub fn supportedLanguages() []const grammars.Language {
-    return &.{ .typescript, .tsx, .python };
+    return &.{ .typescript, .tsx, .python, .go, .zig };
 }
 
 const LiteralKind = enum { string, number, boolean };
@@ -24,6 +24,16 @@ fn literalSyntax(lang: grammars.Language) ?LiteralSyntax {
             .boolean_types = &.{},
         },
         .python => .{
+            .string_types = &.{"string"},
+            .number_types = &.{"integer"},
+            .boolean_types = &.{},
+        },
+        .go => .{
+            .string_types = &.{ "interpreted_string_literal", "raw_string_literal" },
+            .number_types = &.{ "int_literal", "float_literal" },
+            .boolean_types = &.{},
+        },
+        .zig => .{
             .string_types = &.{"string"},
             .number_types = &.{"integer"},
             .boolean_types = &.{},
@@ -169,7 +179,7 @@ pub fn collect(
         used_names.deinit();
     }
 
-    const file_anchor = fileInsertionOffset(lang, root);
+    const file_anchor = fileInsertionOffset(lang, root, source);
     for (candidates.items) |candidate| {
         try proposals.append(allocator, try buildProposal(
             allocator,
@@ -341,11 +351,14 @@ fn advisoryProposal(
 }
 
 /// TS/TSX extract strings, template strings without substitutions, and
-/// numbers; Python extracts strings and integers.
+/// numbers; Python extracts strings and integers; Go and Zig extract
+/// strings and numbers (bool literals are not collected).
 fn canExtract(lang: grammars.Language, kind: LiteralKind) bool {
     return switch (lang) {
         .typescript, .tsx => kind == .string or kind == .number,
         .python => kind == .string or kind == .number,
+        .go => kind == .string or kind == .number,
+        .zig => kind == .string or kind == .number,
         else => false,
     };
 }
@@ -361,6 +374,8 @@ fn renderDeclaration(
     return switch (lang) {
         .typescript, .tsx => std.fmt.allocPrint(allocator, "const {s} = {s};", .{ name, literal }),
         .python => std.fmt.allocPrint(allocator, "{s} = {s}", .{ name, literal }),
+        .go => std.fmt.allocPrint(allocator, "const {s} = {s}", .{ name, literal }),
+        .zig => std.fmt.allocPrint(allocator, "const {s} = {s};", .{ name, literal }),
         else => unreachable,
     };
 }
@@ -385,7 +400,7 @@ fn newlineAt(source: []const u8, offset: usize) []const u8 {
 
 /// Byte offset after which a new top-level declaration is inserted.
 /// `null` means file start.
-fn fileInsertionOffset(lang: grammars.Language, root: bindings.TSNode) ?u32 {
+fn fileInsertionOffset(lang: grammars.Language, root: bindings.TSNode, source: []const u8) ?u32 {
     var last_import: ?u32 = null;
 
     var i: u32 = 0;
@@ -397,6 +412,8 @@ fn fileInsertionOffset(lang: grammars.Language, root: bindings.TSNode) ?u32 {
             .python => std.mem.eql(u8, child_type, "import_statement") or
                 std.mem.eql(u8, child_type, "import_from_statement") or
                 std.mem.eql(u8, child_type, "future_import_statement"),
+            .go => std.mem.eql(u8, child_type, "import_declaration"),
+            .zig => isZigImportDeclaration(child, source),
             else => false,
         };
         if (is_import) {
@@ -405,8 +422,36 @@ fn fileInsertionOffset(lang: grammars.Language, root: bindings.TSNode) ?u32 {
     }
 
     if (last_import) |offset| return offset;
-    if (lang == .python) return pythonModuleDocstringEnd(root);
+
+    switch (lang) {
+        .python => return pythonModuleDocstringEnd(root),
+        // Go requires the package clause before any other declaration.
+        .go => return firstTopLevelChildEnd(root, "package_clause"),
+        else => return null,
+    }
+}
+
+fn firstTopLevelChildEnd(root: bindings.TSNode, node_type: []const u8) ?u32 {
+    var i: u32 = 0;
+    while (i < root.namedChildCount()) : (i += 1) {
+        const child = root.namedChild(i);
+        if (std.mem.eql(u8, child.getType(), node_type)) return child.endByte();
+    }
     return null;
+}
+
+fn isZigImportDeclaration(child: bindings.TSNode, source: []const u8) bool {
+    if (!std.mem.eql(u8, child.getType(), "variable_declaration")) return false;
+    var i: u32 = 0;
+    while (i < child.namedChildCount()) : (i += 1) {
+        const sub = child.namedChild(i);
+        if (std.mem.eql(u8, sub.getType(), "builtin_function") and
+            std.mem.startsWith(u8, sub.slice(source), "@import"))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn pythonModuleDocstringEnd(root: bindings.TSNode) ?u32 {
@@ -771,6 +816,216 @@ test "name collision appends suffix" {
     const second_candidate = try candidateFor(allocator, second_source, second[0]);
     defer allocator.free(second_candidate);
     try std.testing.expect(std.mem.startsWith(u8, second_candidate, "const ACTIVE_3 = \"ACTIVE\";\n"));
+}
+
+test "go declaration inserted after last import" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\package main
+        \\
+        \\import "fmt"
+        \\
+        \\func main() {
+        \\    fmt.Println("hello")
+        \\    fmt.Println("hello")
+        \\    fmt.Println("hello")
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .go);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const candidate = try candidateFor(allocator, source, proposals[0]);
+    defer allocator.free(candidate);
+    try std.testing.expectEqualStrings(
+        "package main\n" ++
+            "\n" ++
+            "import \"fmt\"\n" ++
+            "const HELLO = \"hello\"\n" ++
+            "\n" ++
+            "func main() {\n" ++
+            "    fmt.Println(HELLO)\n" ++
+            "    fmt.Println(HELLO)\n" ++
+            "    fmt.Println(HELLO)\n" ++
+            "}\n",
+        candidate,
+    );
+}
+
+test "go import block anchor and raw strings" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\package main
+        \\
+        \\import (
+        \\    "fmt"
+        \\    "os"
+        \\)
+        \\
+        \\func main() {
+        \\    fmt.Println(`raw`)
+        \\    fmt.Println(`raw`)
+        \\    fmt.Println(`raw`)
+        \\    _ = os.Args
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .go);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const candidate = try candidateFor(allocator, source, proposals[0]);
+    defer allocator.free(candidate);
+    try std.testing.expect(std.mem.indexOf(u8, candidate, ")\nconst RAW = `raw`\n") != null);
+}
+
+test "go bool literals stay untouched" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\package main
+        \\
+        \\func f() {
+        \\    a := true
+        \\    b := true
+        \\    c := true
+        \\    _ = a
+        \\    _ = b
+        \\    _ = c
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .go);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 0), proposals.len);
+}
+
+test "go without imports inserts after the package clause" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\package main
+        \\
+        \\var a = 42
+        \\var b = 42
+        \\var c = 42
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .go);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const candidate = try candidateFor(allocator, source, proposals[0]);
+    defer allocator.free(candidate);
+    try std.testing.expectEqualStrings(
+        "package main\n" ++
+            "const L_42 = 42\n" ++
+            "\n" ++
+            "var a = L_42\n" ++
+            "var b = L_42\n" ++
+            "var c = L_42\n",
+        candidate,
+    );
+}
+
+test "zig declaration inserted after @import declaration" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\const std = @import("std");
+        \\
+        \\pub fn main() void {
+        \\    const a = "hello";
+        \\    const b = "hello";
+        \\    const c = "hello";
+        \\    _ = a;
+        \\    _ = b;
+        \\    _ = c;
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .zig);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const candidate = try candidateFor(allocator, source, proposals[0]);
+    defer allocator.free(candidate);
+    try std.testing.expectEqualStrings(
+        "const std = @import(\"std\");\n" ++
+            "const HELLO = \"hello\";\n" ++
+            "\n" ++
+            "pub fn main() void {\n" ++
+            "    const a = HELLO;\n" ++
+            "    const b = HELLO;\n" ++
+            "    const c = HELLO;\n" ++
+            "    _ = a;\n" ++
+            "    _ = b;\n" ++
+            "    _ = c;\n" ++
+            "}\n",
+        candidate,
+    );
+}
+
+test "zig @import path occurrences are excluded" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\const std = @import("std");
+        \\
+        \\const a = "std";
+        \\const b = "std";
+        \\const c = "std";
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .zig);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    try std.testing.expectEqual(@as(usize, 4), proposals[0].edits.len);
+    const candidate = try candidateFor(allocator, source, proposals[0]);
+    defer allocator.free(candidate);
+    try std.testing.expect(std.mem.startsWith(u8, candidate, "const std = @import(\"std\");\nconst STD = \"std\";\n"));
+    try std.testing.expect(std.mem.endsWith(u8, candidate, "const c = STD;\n"));
+}
+
+test "zig bool literals stay untouched and numbers extract" {
+    const allocator = std.testing.allocator;
+    const bool_source =
+        \\pub fn f() void {
+        \\    const a = true;
+        \\    const b = true;
+        \\    const c = true;
+        \\    _ = a;
+        \\    _ = b;
+        \\    _ = c;
+        \\}
+        \\
+    ;
+    const bool_proposals = try collectForTest(allocator, bool_source, .zig);
+    defer deinitProposals(allocator, bool_proposals);
+    try std.testing.expectEqual(@as(usize, 0), bool_proposals.len);
+
+    const number_source =
+        \\pub fn f() void {
+        \\    const a = 42;
+        \\    const b = 42;
+        \\    const c = 42;
+        \\    _ = a;
+        \\    _ = b;
+        \\    _ = c;
+        \\}
+        \\
+    ;
+    const number_proposals = try collectForTest(allocator, number_source, .zig);
+    defer deinitProposals(allocator, number_proposals);
+    try std.testing.expectEqual(@as(usize, 1), number_proposals.len);
+    const candidate = try candidateFor(allocator, number_source, number_proposals[0]);
+    defer allocator.free(candidate);
+    try std.testing.expect(std.mem.startsWith(u8, candidate, "const L_42 = 42;\n"));
 }
 
 test "long literal name truncates at 40 chars" {
