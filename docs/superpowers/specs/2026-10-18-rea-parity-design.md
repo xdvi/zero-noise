@@ -32,7 +32,9 @@ refactoring terms:
 2. Findings are actionable: each one can carry a machine-applicable patch with an
    explicit confidence level.
 3. Every result declares its scope and limitations; silence is never ambiguous.
-4. Applying a change is always state-locked, syntax-validated, and test-bracketed.
+4. Every application is state-locked and syntax-validated by the engine; guard and
+   predicate patches additionally require a test command, enforced by the engine
+   itself.
 5. CI can gate refactor quality from a portable artifact (no-regression, not score 0).
 
 ## 2. Goals, non-goals, anti-goals
@@ -45,7 +47,7 @@ refactoring terms:
   and uniform coverage/limitations reporting.
 - **G3 (P1):** Detector depth for real boilerplate: structural clones, dead code,
   unused symbols.
-- **G4 (P2):** Language breadth beyond the current five.
+- **G4 (P2):** Language breadth beyond the current six.
 - **G5 (P2.5):** Real persistence and history (the current state layer is an
   in-memory stub).
 
@@ -69,7 +71,8 @@ refactoring terms:
 - Token-heavy outputs that burn agent context.
 - Claims not backed by the build (docs drift, stale binaries).
 - "Noise score 0" as a success metric; the criterion is no-regression plus trend.
-- Any blind mutation path without hash lock, syntax validation, and test bracketing.
+- Any blind mutation path without a hash lock and syntax validation; guard and
+  predicate patches never apply without a test command.
 
 ## 3. Constraints
 
@@ -169,9 +172,11 @@ is machine-applicable. Guard clauses, predicates, and constants are left to the 
    - CLI: `zero-noise plan <path>` (dry-run proposals; text/json/compact).
    - MCP: new `propose_fixes` tool (file or root; paginated; patches opt-in).
    - `refactor_helper` stays contract-compatible and now references proposals.
-5. **Apply:** unchanged contract. `safe_refactor` accepts `candidate_content`,
-   `patch_file`, and (new, additive) `patch_content`, with hash lock, syntax
-   validation, optional tests, and rollback.
+5. **Apply:** `safe_refactor` accepts `candidate_content`, `patch_file`, and (new,
+   additive) `patch_content` and `patch_kind`, with hash lock, syntax validation,
+   and rollback. Tests stay optional for boolean, constant, and closure transforms;
+   guard and predicate patches are rejected without a `test_cmd` — enforced by the
+   engine, not only by the skill workflow.
 
 **Acceptance:**
 
@@ -180,6 +185,7 @@ is machine-applicable. Guard clauses, predicates, and constants are left to the 
 - Proposals are deterministic for identical input.
 - Unsafe shapes are skipped with a recorded limitation, never emitted as patches.
 - Existing tools keep their signatures; `zig build test` is green and leak-free.
+- Applying a guard or predicate patch without a `test_cmd` is refused by the engine.
 
 ### P0.5 — Repo evidence, baselines, and limitations
 
@@ -249,11 +255,12 @@ structural duplication, dead code, and unused symbols.
 
 ### P2 — Language breadth
 
-**Problem:** five languages is narrow relative to REA's substrate coverage.
+**Problem:** six languages is narrow relative to REA's substrate coverage.
 
 **Deliverables:**
 
-1. JavaScript grammar first (separate from TSX).
+1. JavaScript grammar first (separate from TSX), making it the seventh supported
+   language.
 2. Then a user-prioritized list. Recommendation: Java, Kotlin, C/C++; Swift optional.
 3. A rule-applicability matrix per language: which rules run, which are skipped, and
    why.
@@ -276,8 +283,9 @@ build does not have.
    engine spec requires: WAL mode, schema migrations, and a real backend version
    string. (A JSONL fallback is explicitly rejected; utility and documented behavior
    depend on the ACID ledger.)
-2. **Schema:** file cache, symbol index, refactor ledger, and run history (timestamp,
-   version, root, totals).
+2. **Schema:** refactor ledger and run history (timestamp, version, root, totals).
+   The file-cache and symbol-index tables from the engine spec ship with the
+   incremental phase instead, so P2.5 creates no unused tables.
 3. **Surfaces:** `zero-noise status` (backend, indexed files, last run) and
    `zero-noise log` (ledger entries and outcomes); `repo_report` includes a history
    summary.
@@ -322,8 +330,9 @@ open to objection.
   unsafe to synthesize.
 - **Guard safety bar:** a closed per-language syntactic allowlist plus the test
   bracket. `safe_to_apply` is false unless the allowlist is proven; `confidence` only
-  ranks priority. The skill workflow requires `test_cmd` for applying guard or
-  predicate patches; the engine keeps `test_cmd` optional with syntax validation.
+  ranks priority. `test_cmd` is mandatory — enforced by the engine — for applying
+  guard or predicate patches; boolean, constant, and closure transforms keep it
+  optional with mandatory hash lock and syntax validation.
 - **Baseline identity:** per-file, per-rule counts in schema v1; fingerprints deferred.
   New parse errors on previously parsing files count as regressions; deletions are
   ignored; renames are new-plus-removed; config and version drift warn, with strict
@@ -337,9 +346,9 @@ open to objection.
 - **Inventory:** current walker defaults preserved; new include/exclude keys in
   `.zero-noise.json`; symlinks not followed; root auto-discovery with `--config`
   override.
-- **Persistence scope:** P2.5 ships ledger, run history, `status`, and `log` first; the
-  index as a read cache for analysis is deferred to a later phase. P0.5 stays
-  persistence-independent.
+- **Persistence scope:** P2.5 ships ledger, run history, `status`, and `log` first;
+  the file-cache and symbol-index tables and their use as an analysis cache are
+  deferred to a later phase. P0.5 stays persistence-independent.
 - **Patch format:** the internal unified-diff-like format is guaranteed
   zero-noise-applicable; `git apply` interoperability is deferred.
 - **MCP surface:** exactly two new tools (`propose_fixes`, `repo_report`); baselines
