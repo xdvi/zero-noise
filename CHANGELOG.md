@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Native Engine**: Reconstructed core analysis and mutation pipeline into a native Zig static binary with zero external runtime dependencies.
 - **Embedded Parsers**: Integrated Tree-sitter C ABI core with embedded grammar parsers for Go, Rust, Python, TypeScript/TSX, C#, and Zig.
-- **State Storage**: Embedded SQLite3 with WAL mode, task ledger, symbol indexing, and SHA-256 file state locking.
+- **State Storage**: In-memory task ledger and symbol index with SHA-256 file state locking (SQLite was removed by a clean break; file-based persistence is tracked for a future release).
 - **Model Context Protocol (MCP)**: JSON-RPC 2.0 stdio server (`zero-noise mcp`) exposing 7 typed tools:
   - `inspect_evidence`: Prioritized Evidence Contract crossing noise, cognitive complexity, and blast radius.
   - `audit_noise`: Static structural linter checking nesting depth > 2, closures > 80 chars, and raw booleans.

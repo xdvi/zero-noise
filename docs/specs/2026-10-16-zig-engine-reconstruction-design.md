@@ -4,6 +4,10 @@
 **Date**: 2026-10-16  
 **Scope**: Full architectural port from Python scripts to a single static native Zig binary (`zero-noise`) embedding Tree-sitter C ABI and SQLite WAL state storage.
 
+> **Storage superseded:** the SQLite WAL storage design in this document was
+> deliberately removed by the clean break (`f462d18`); persistence is file-based —
+> see `docs/superpowers/specs/2026-10-18-rea-parity-design.md` (P2.5).
+
 ---
 
 ## 1. Executive Summary & Goals

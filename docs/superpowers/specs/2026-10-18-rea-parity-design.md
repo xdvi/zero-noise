@@ -79,8 +79,8 @@ refactoring terms:
 Inherited from `COLLABORATION.md` and the existing engine spec:
 
 - Zero external runtime dependencies; static cross-platform binaries.
-- Tree-sitter and any storage engine remain embedded C sources compiled by `zig build`
-  (the SQLite amalgamation is already vendored at `c/sqlite3.c`).
+- Grammars and the parser stay embedded C sources compiled by `zig build`; storage is
+  file-based (the no-SQLite clean break stands) and no database engine is embedded.
 - All mutations verify disk state via SHA-256 before writing.
 - Leak-free memory; `zig build test` must pass without leaks.
 - Cross-platform parity (Linux, macOS, Windows).
@@ -115,8 +115,9 @@ Inherited from `COLLABORATION.md` and the existing engine spec:
 - Persistence is a stub: `storage/db.zig` is in-memory maps, `getSqliteVersion()`
   returns `"no-sqlite"`, the version string is hardcoded `(no-sqlite)`, and
   `c/sqlite3.c` is not compiled. The ledger does not survive process exit. The
-  tracked `bin/zero-noise` is stale and reports SQLite 3.46.0. README/CHANGELOG/spec
-  still describe SQLite WAL storage.
+  tracked `bin/zero-noise` is stale and reports SQLite 3.46.0. (At spec time,
+  README/CHANGELOG/spec described SQLite WAL storage; README and CHANGELOG were
+  aligned on 2026-10-19 and the engine spec is marked superseded.)
 - Tests: roughly 102 Zig test blocks; the bench harness measures speed, not quality.
 
 ## 5. Approved direction and cuts
@@ -280,24 +281,29 @@ structural duplication, dead code, and unused symbols.
 ### P2.5 — Persistence and history
 
 **Problem:** `storage/db.zig` is an in-memory stub; the ledger cannot survive a
-process exit; docs, spec, and the stale binary claim WAL storage that the current
-build does not have.
+process exit; docs, spec, and the stale binary had claimed SQLite/WAL storage that a
+previous clean break (`f462d18`) deliberately removed.
 
 **Deliverables:**
 
-1. **Implement embedded storage** using the vendored SQLite amalgamation, as the
-   engine spec requires: WAL mode, schema migrations, and a real backend version
-   string. (A JSONL fallback is explicitly rejected; utility and documented behavior
-   depend on the ACID ledger.)
-2. **Schema:** refactor ledger and run history (timestamp, version, root, totals).
-   The file-cache and symbol-index tables from the engine spec ship with the
-   incremental phase instead, so P2.5 creates no unused tables.
+1. **Implement file-based persistence** (no SQLite — the clean break stands). The
+   ledger and run history live in deterministic files under `.zero-noise/`
+   (append-only JSONL ledger plus JSON snapshots), written with the same atomic
+   rename and SHA-256 state-lock discipline the engine already applies to source
+   files. Concurrency safety comes from atomic writes and an advisory lock file, not
+   from an embedded database engine. The vendored `c/sqlite3.c` is removed from the
+   tree.
+2. **Record shapes:** refactor ledger entries and run history records (timestamp,
+   version, root, totals), versioned with a schema field so future fields are
+   additive. File-cache and symbol-index records ship with the incremental phase
+   instead, so P2.5 writes nothing unused.
 3. **Surfaces:** `zero-noise status` (backend, indexed files, last run) and
    `zero-noise log` (ledger entries and outcomes); `repo_report` includes a history
    summary.
-4. **Artifact truth:** remove the hardcoded `(no-sqlite)` string, refresh or delete
-   the stale tracked `bin/zero-noise`, and align README, CHANGELOG, and the engine
-   spec with the actual build.
+4. **Artifact truth:** replace the hardcoded `(no-sqlite)` string with the real
+   backend name, refresh or delete the stale tracked `bin/zero-noise`, and align
+   README, CHANGELOG, and the 2026-10-16 engine spec with the file-based build (its
+   SQLite section is superseded).
 
 **Acceptance:**
 
@@ -355,9 +361,10 @@ open to objection.
 - **Inventory:** current walker defaults preserved; new include/exclude keys in
   `.zero-noise.json`; symlinks not followed; root auto-discovery with `--config`
   override.
-- **Persistence scope:** P2.5 ships ledger, run history, `status`, and `log` first;
-  the file-cache and symbol-index tables and their use as an analysis cache are
-  deferred to a later phase. P0.5 stays persistence-independent.
+- **Persistence scope:** P2.5 ships ledger, run history, `status`, and `log` first
+  on file-based storage (no SQLite — the clean break stands); file-cache and
+  symbol-index records and their use as an analysis cache are deferred to a later
+  phase. P0.5 stays persistence-independent.
 - **Patch format:** the internal unified-diff-like format is guaranteed
   zero-noise-applicable; `git apply` interoperability is deferred.
 - **MCP surface:** exactly two new tools (`propose_fixes`, `repo_report`); baselines

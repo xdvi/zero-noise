@@ -341,7 +341,7 @@ zero-noise/
 │   ├── treesitter/                  # Tree-sitter C ABI bindings and grammars
 │   ├── mcp/                         # JSON-RPC 2.0 stdio server & protocol
 │   └── cli/                         # Subcommand handlers
-├── c/                               # Embedded SQLite3 & Tree-sitter C ABI grammars
+├── c/                               # Tree-sitter C ABI grammars (vendored sqlite3.c unused; removal planned)
 ├── skills/
 │   └── zero-noise-refactor/
 │       ├── SKILL.md                 # Agent skill descriptor
