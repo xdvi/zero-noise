@@ -61,6 +61,13 @@ pub const TOOLS = [_]ToolDefinition{
         ,
     },
     .{
+        .name = "propose_fixes",
+        .description = "Lists machine-applicable fix proposals (guard, predicate, constant, closure) with state-lock hashes and optional composed patches.",
+        .input_schema_json =
+        \\{"type":"object","properties":{"path":{"type":"string","description":"Path of the file or directory to analyze."},"kinds":{"type":"string","description":"Comma-separated proposal kinds to include (default: all)."},"include_patches":{"type":"boolean","description":"Include a unified diff per proposal (default: false)."},"compose":{"type":"boolean","description":"Include a greedy composition of the file's proposals (default: false)."},"page":{"type":"integer","description":"Page number (default: 1)."},"page_size":{"type":"integer","description":"Proposals per page (default: 10)."},"format":{"type":"string","enum":["json","text","compact"],"description":"Output format: json (default), text, or compact."},"root":{"type":"string","description":"Project root directory (default: .)."}},"required":["path"]}
+        ,
+    },
+    .{
         .name = "evaluate_rules",
         .description = "Evaluates declarative linting rules against a target path.",
         .input_schema_json =

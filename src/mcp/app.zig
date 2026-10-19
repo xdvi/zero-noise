@@ -9,6 +9,7 @@ const refactor_helper = @import("tools/refactor_helper.zig");
 const blast_radius = @import("tools/blast_radius.zig");
 const inspect_evidence = @import("tools/inspect_evidence.zig");
 const safe_refactor = @import("tools/safe_refactor.zig");
+const propose_fixes = @import("tools/propose_fixes.zig");
 const complexity = @import("tools/complexity.zig");
 const evaluate_rules = @import("tools/evaluate_rules.zig");
 
@@ -29,6 +30,7 @@ pub fn executeToolCallWithDeps(
         .{ .name = "inspect_evidence", .handler = inspect_evidence.executeInspectEvidenceWithDeps },
         .{ .name = "evidence_contract", .handler = inspect_evidence.executeInspectEvidenceWithDeps },
         .{ .name = "safe_refactor", .handler = safe_refactor.executeSafeRefactorWithDeps },
+        .{ .name = "propose_fixes", .handler = propose_fixes.executeProposeFixesWithDeps },
         .{ .name = "complexity", .handler = complexity.executeComplexityWithDeps },
         .{ .name = "evaluate_rules", .handler = evaluate_rules.executeEvaluateRulesWithDeps },
     };
@@ -317,6 +319,34 @@ test "executeEvaluateRules ignores comments and string literals" {
     defer inner.deinit();
     const violations = inner.value.object.get("violations").?.array;
     try std.testing.expectEqual(@as(usize, 0), violations.items.len);
+}
+
+test "propose_fixes is dispatched with composed proposals" {
+    const allocator = std.testing.allocator;
+    const io = std.Options.debug_io;
+
+    const file_path = "tests/test_propose_fixes_mcp.ts";
+    const fixture = "function process(user: User): void {\n  if (user.isActive) {\n    sendEmail(user);\n  }\n}\n";
+    const sf = try std.Io.Dir.cwd().createFile(io, file_path, .{});
+    try sf.writeStreamingAll(io, fixture);
+    sf.close(io);
+    defer std.Io.Dir.cwd().deleteFile(io, file_path) catch {};
+
+    const req = "{\"jsonrpc\":\"2.0\",\"id\":25,\"method\":\"tools/call\",\"params\":{\"name\":\"propose_fixes\",\"arguments\":{\"path\":\"" ++ file_path ++ "\",\"compose\":true,\"format\":\"json\"}}}";
+    const resp = (try @import("server.zig").handleJsonRpcLine(allocator, req)).?;
+    defer allocator.free(resp);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, resp, .{});
+    defer parsed.deinit();
+    const result_obj = parsed.value.object.get("result").?.object;
+    try std.testing.expectEqual(false, result_obj.get("isError").?.bool);
+
+    const content_text = result_obj.get("content").?.array.items[0].object.get("text").?.string;
+    var inner = try std.json.parseFromSlice(std.json.Value, allocator, content_text, .{});
+    defer inner.deinit();
+    try std.testing.expectEqual(@as(i64, 1), inner.value.object.get("total").?.integer);
+    const composed = inner.value.object.get("composed").?.object;
+    try std.testing.expectEqual(@as(usize, 1), composed.get("applied").?.array.items.len);
 }
 
 test "executeSafeRefactor with candidate_content and patch_file and ledger integration" {

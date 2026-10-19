@@ -2,6 +2,7 @@ const std = @import("std");
 
 const runner = @import("../mutation/runner.zig");
 const rewriter = @import("../mutation/rewriter.zig");
+const propose = @import("../mutation/propose.zig");
 const db_mod = @import("../storage/db.zig");
 const noise = @import("../analysis/noise.zig");
 const complexity = @import("../analysis/complexity.zig");
@@ -33,6 +34,7 @@ pub const Deps = struct {
     calculateComplexity: *const fn (std.mem.Allocator, []const u8, grammars.Language) anyerror![]complexity.FunctionRecord = defaultCalculateComplexity,
     analyzeBlastRadius: *const fn (std.mem.Allocator, []const blast.FileInput, []const u8) anyerror!blast.BlastRadiusResult = defaultAnalyzeBlastRadius,
     simplify: *const fn (std.mem.Allocator, []const u8) anyerror![]u8 = defaultSimplify,
+    collectProposals: *const fn (std.mem.Allocator, []const u8, grammars.Language, propose.KindFlags) anyerror!propose.CollectResult = defaultCollectProposals,
 };
 
 var default_context: u8 = 0;
@@ -76,6 +78,15 @@ fn defaultSimplify(allocator: std.mem.Allocator, source: []const u8) anyerror![]
     return rewriter.simplify(allocator, source);
 }
 
+fn defaultCollectProposals(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    lang: grammars.Language,
+    flags: propose.KindFlags,
+) anyerror!propose.CollectResult {
+    return propose.collectProposals(allocator, source, lang, flags);
+}
+
 pub fn defaultDeps() Deps {
     return .{
         .fs = .{ .context = @ptrCast(&default_context), .readFileAllocFn = defaultReadFileAlloc },
@@ -84,5 +95,6 @@ pub fn defaultDeps() Deps {
         .calculateComplexity = defaultCalculateComplexity,
         .analyzeBlastRadius = defaultAnalyzeBlastRadius,
         .simplify = defaultSimplify,
+        .collectProposals = defaultCollectProposals,
     };
 }

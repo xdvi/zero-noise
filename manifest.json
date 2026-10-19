@@ -36,6 +36,7 @@
     "complexity",
     "blast_radius",
     "safe_refactor",
+    "propose_fixes",
     "evaluate_rules"
   ]
 }
