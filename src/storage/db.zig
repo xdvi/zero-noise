@@ -24,7 +24,6 @@ pub const Database = struct {
     }
 
     pub fn close(self: *Database) void {
-        std.debug.print("CLOSE\\n", .{});
         // free file_cache
         var it = self.file_cache.iterator();
         while (it.next()) |e| {
@@ -49,12 +48,6 @@ pub const Database = struct {
         }
         self.symbol_refs.deinit(self.allocator);
         self.allocator.free(self.db_path);
-    }
-
-    pub fn exec(self: Database, sql: [*:0]const u8) !void {
-        _ = self;
-        _ = sql;
-        return;
     }
 
     pub fn recordFileCache(self: *Database, path: [*:0]const u8, mtime: i64, size: i64, sha256: [*:0]const u8, noise_count: i32, complexity: i32) !void {

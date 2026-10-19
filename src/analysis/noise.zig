@@ -185,8 +185,10 @@ fn countLogicalOperators(root: bindings.TSNode, source: []const u8, lang: gramma
             }
         }
 
-        if (enter_children and cursor.gotoFirstChild()) {
-            continue;
+        if (enter_children) {
+            if (cursor.gotoFirstChild()) {
+                continue;
+            }
         }
 
         if (cursor.gotoNextSibling()) {

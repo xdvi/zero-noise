@@ -26,7 +26,7 @@ Use this skill when:
 - **Zero Behavior Change**: Preserve exact external behavior, signatures, error types, and API contracts.
 - **Evidence → Proposal → `safe_refactor` (No Blind-Fix)**: Never run `--fix` blindly. Inspect evidence, preview diff (`refactor_helper` / `--dry-run`), propose the scoped change, then execute `safe_refactor` with `expected_hash` and `test_cmd`.
 - **One Concern per Pass**: Cap each pass/diff/commit to a single structural concern (e.g., pass 1: guard clauses; pass 2: predicate/closure extraction; pass 3: DRY constants). Keep diffs small and reviewable.
-- **Inlining Ban**: Never keep anonymous closures >2 lines or >80 characters in argument position. Extract pure named functions passed by reference.
+- **Inlining Ban**: Never keep anonymous closures in argument position (the automated engine flags closures exceeding 80 characters via `config.max_closure_len`). Extract pure named functions passed by reference.
 - **Absolute Early Return**: Invert conditions and return early. Maximum nesting depth is 2 levels.
 - **Ubiquitous Language in Predicates**: Replace compound boolean conditions (`a && (b || c)`) with domain-named predicates that reuse the repository's existing vocabulary. Never synonymize established repo terms; if domain naming is ambiguous, propose candidates and wait for user approval.
 - **Short-Circuit & Side-Effect Safety**: Before applying De Morgan's laws or inverting conditions, verify operands have no side-effects, mutations, I/O, or panic/nil/bounds guards dependent on evaluation order. If present, isolate side-effects into prior statements or skip algebraic rewrite.
@@ -61,9 +61,9 @@ Execute via native MCP tools (`zero-noise mcp`) when available, or CLI commands 
 
 ### 1. Gate Check & Evidence Inspection
 1. Confirm the target is not generated/vendored, a deliberate state machine, or an unbenchmarked hot path.
-2. Generate the Evidence Pack and capture `state_lock_sha256` (`expected_hash`):
-   - MCP: `inspect_evidence(path=target, page=1, page_size=10)`
-   - CLI: `zero-noise audit <target> --format=compact` and `zero-noise complexity <target> --threshold=15`
+2. Generate evidence:
+   - MCP: `inspect_evidence(path=target, page=1, page_size=10)` generates the full Evidence Pack with `state_lock_sha256` (`expected_hash`).
+   - CLI: `zero-noise audit <target> --format=compact` formats structural noise findings compactly (paired with `zero-noise complexity <target> --threshold=15`).
 
 ### 2. Blast Radius & Candidate Analysis
 3. Check coupling and preview reductions before editing:

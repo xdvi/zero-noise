@@ -2,9 +2,11 @@
 """
 DRY manifest synchronizer.
 Reads manifest.json (single source of truth) and projects metadata to:
-- .claude-plugin/plugin.json
-- gemini-extension.json
 - plugin.json
+- mcp_config.json
+- gemini-extension.json
+- .claude-plugin/plugin.json
+- .mcp.json
 """
 
 import argparse
@@ -14,12 +16,13 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_FILE = REPO_ROOT / "manifest.json"
+PLUGIN_NAME = "zero-noise"
 
 
 def generate_targets(meta: dict) -> dict[Path, str]:
     """Generates expected content map for all managed files."""
     mcp_config = {
-        "command": "zero-noise",
+        "command": PLUGIN_NAME,
         "args": ["mcp"],
     }
 
@@ -36,7 +39,7 @@ def generate_targets(meta: dict) -> dict[Path, str]:
     # 2. mcp_config.json (Antigravity agy plugin MCP server descriptor)
     agy_mcp_json = {
         "mcpServers": {
-            "zero-noise": mcp_config,
+            PLUGIN_NAME: mcp_config,
         },
     }
 
@@ -47,13 +50,13 @@ def generate_targets(meta: dict) -> dict[Path, str]:
         "version": meta["version"],
         "contextFileName": meta.get("contextFileName", "AGENTS.md"),
         "mcpServers": {
-            "zero-noise": mcp_config,
+            PLUGIN_NAME: mcp_config,
         },
     }
 
     # 4. .claude-plugin/plugin.json (Claude Code descriptor)
     claude_mcp_config = {
-        "command": "${CLAUDE_PLUGIN_ROOT}/bin/zero-noise",
+        "command": f"${{CLAUDE_PLUGIN_ROOT}}/bin/{PLUGIN_NAME}",
         "args": ["mcp"],
     }
     claude_json = {
@@ -66,14 +69,14 @@ def generate_targets(meta: dict) -> dict[Path, str]:
         "license": meta.get("license", "MIT"),
         "keywords": meta.get("keywords", []),
         "mcpServers": {
-            "zero-noise": claude_mcp_config,
+            PLUGIN_NAME: claude_mcp_config,
         },
     }
 
     # 5. .mcp.json (Root Claude Code / Universal MCP server descriptor)
     root_mcp_json = {
         "mcpServers": {
-            "zero-noise": mcp_config,
+            PLUGIN_NAME: mcp_config,
         },
     }
 
@@ -90,15 +93,18 @@ def generate_targets(meta: dict) -> dict[Path, str]:
 def check_manifests(targets: dict[Path, str], quiet: bool = False) -> int:
     out_of_sync = []
     for file_path, expected_content in targets.items():
-        if not file_path.is_file() or file_path.read_text(encoding="utf-8") != expected_content:
+        if not file_path.is_file():
+            out_of_sync.append(str(file_path.relative_to(REPO_ROOT)))
+            continue
+        if file_path.read_text(encoding="utf-8") != expected_content:
             out_of_sync.append(str(file_path.relative_to(REPO_ROOT)))
 
     if not out_of_sync:
         if not quiet:
-            print("zero-noise: all manifests are in sync with manifest.json")
+            print(f"{PLUGIN_NAME}: all manifests are in sync with manifest.json")
         return 0
 
-    print("zero-noise: error: manifests out of sync with manifest.json:", file=sys.stderr)
+    print(f"{PLUGIN_NAME}: error: manifests out of sync with manifest.json:", file=sys.stderr)
     for item in out_of_sync:
         print(f"  - {item}", file=sys.stderr)
     print("Run 'python3 scripts/sync_manifests.py' to update.", file=sys.stderr)
@@ -122,7 +128,7 @@ def sync_manifests(check: bool = False, quiet: bool = False) -> int:
 
     if not quiet:
         synced_names = ", ".join(str(p.relative_to(REPO_ROOT)) for p in targets.keys())
-        print(f"zero-noise: synchronized manifests to {synced_names}")
+        print(f"{PLUGIN_NAME}: synchronized manifests to {synced_names}")
     return 0
 
 

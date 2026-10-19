@@ -32,7 +32,7 @@ Exposes 7 native typed tools via standard JSON-RPC 2.0 stdio (`zero-noise mcp`):
 | `refactor_helper` | `filepath` (req) | Detects DRY repeated literals and algebraic boolean simplifications |
 | `complexity` | `path` (req), `threshold`, `format` | Calculates SonarSource Cognitive Complexity per function (default threshold: 15) |
 | `blast_radius` | `symbol` (req), `root`, `format` | Analyzes symbol usages, definitions, and cross-file coupling risk |
-| `safe_refactor` | `filepath` (req), `expected_hash`, `max_blast_risk`, `test_cmd`, `fix`, `format` | Test-bracketed refactoring runner with state-lock hash verification and atomic rollback |
+| `safe_refactor` | `filepath` (req), `expected_hash`, `max_blast_risk`, `test_cmd`, `fix`, `format`, `candidate_content`, `patch_file`, `force`, `root` | Test-bracketed refactoring runner with state-lock hash verification and atomic rollback |
 | `evaluate_rules` | `path` (req), `rules`, `format` | Evaluates declarative AST and regex anti-pattern rules from `.zero-noise-rules.json` |
 
 

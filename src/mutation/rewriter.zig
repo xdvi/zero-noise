@@ -44,9 +44,14 @@ pub fn rewrite(allocator: std.mem.Allocator, source: []const u8) !RewriteResult 
         seen_count += 1;
 
         var changed_in_pass = false;
-        if (try runRewritePass(allocator, &current, &total_changes, ternaries.rewriteTernaries)) changed_in_pass = true;
-        if (try runRewritePass(allocator, &current, &total_changes, de_morgan.rewriteDeMorgan)) changed_in_pass = true;
-        if (try runRewritePass(allocator, &current, &total_changes, double_neg.rewriteDoubleNegation)) changed_in_pass = true;
+        const ternaries_changed = try runRewritePass(allocator, &current, &total_changes, ternaries.rewriteTernaries);
+        if (ternaries_changed) changed_in_pass = true;
+
+        const de_morgan_changed = try runRewritePass(allocator, &current, &total_changes, de_morgan.rewriteDeMorgan);
+        if (de_morgan_changed) changed_in_pass = true;
+
+        const double_neg_changed = try runRewritePass(allocator, &current, &total_changes, double_neg.rewriteDoubleNegation);
+        if (double_neg_changed) changed_in_pass = true;
 
         if (!changed_in_pass) break;
     }

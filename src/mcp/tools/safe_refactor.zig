@@ -73,7 +73,8 @@ pub fn executeSafeRefactorDirect(allocator: std.mem.Allocator, params: SafeRefac
     const task_id = setup.task_id;
 
     // Enforcement of max_blast_risk
-    if (try enforceBlastRisk(allocator, filepath, root, max_blast_risk_str, force, deps, maybe_ledger, task_id, format, expected_hash)) |blocked| {
+    const blast_check = try enforceBlastRisk(allocator, filepath, root, max_blast_risk_str, force, deps, maybe_ledger, task_id, format, expected_hash);
+    if (blast_check) |blocked| {
         return blocked;
     }
 

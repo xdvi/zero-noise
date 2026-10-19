@@ -20,22 +20,51 @@ function detectTarget() {
     return null;
 }
 
-function download(url, dest) {
-    return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(dest);
-        https.get(url, (res) => {
-            if (res.statusCode === 302 || res.statusCode === 301) {
-                download(res.headers.location, dest).then(resolve).catch(reject);
-                return;
-            }
-            if (res.statusCode !== 200) {
-                reject(new Error('HTTP ' + res.statusCode));
-                return;
-            }
-            res.pipe(file);
-            file.on('finish', () => { file.close(); resolve(); });
-        }).on('error', reject);
+function handleResponse(res, file, dest, resolve, reject) {
+    if (res.statusCode === 302 || res.statusCode === 301) {
+        download(res.headers.location, dest).then(resolve).catch(reject);
+        return;
+    }
+    if (res.statusCode !== 200) {
+        reject(new Error('HTTP ' + res.statusCode));
+        return;
+    }
+    res.pipe(file);
+    file.on('finish', () => {
+        file.close();
+        resolve();
     });
+}
+
+function executeDownload(url, dest, resolve, reject) {
+    const file = fs.createWriteStream(dest);
+    https.get(url, (res) => handleResponse(res, file, dest, resolve, reject)).on('error', reject);
+}
+
+function download(url, dest) {
+    return new Promise((resolve, reject) => executeDownload(url, dest, resolve, reject));
+}
+
+function tryBuildFromSource(target, binaryPath) {
+    const buildFile = path.join(__dirname, '..', 'build.zig');
+    if (!fs.existsSync(buildFile)) {
+        return false;
+    }
+    try {
+        execSync('zig build -Doptimize=ReleaseFast', {
+            stdio: 'inherit',
+            cwd: path.join(__dirname, '..'),
+        });
+    } catch {}
+    const binaryName = target.binary || target;
+    const built = path.join(__dirname, '..', 'zig-out', 'bin', binaryName);
+    if (!fs.existsSync(built)) {
+        return false;
+    }
+    fs.copyFileSync(built, binaryPath);
+    fs.chmodSync(binaryPath, 0o755);
+    console.log('Built from source.');
+    return true;
 }
 
 async function main() {
@@ -61,16 +90,8 @@ async function main() {
         await download(url, archive);
     } catch (e) {
         console.error('Download failed: ' + e.message);
-        // Fallback: try zig build
-        if (fs.existsSync(path.join(__dirname, '..', 'build.zig'))) {
-            try { execSync('zig build -Doptimize=ReleaseFast', { stdio: 'inherit', cwd: path.join(__dirname, '..') }); } catch {}
-            const built = path.join(__dirname, '..', 'zig-out', 'bin', t.binary);
-            if (fs.existsSync(built)) {
-                fs.copyFileSync(built, binaryPath);
-                fs.chmodSync(binaryPath, 0o755);
-                console.log('Built from source.');
-                return;
-            }
+        if (tryBuildFromSource(t, binaryPath)) {
+            return;
         }
         process.exit(1);
     }

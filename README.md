@@ -10,7 +10,7 @@ A universal plugin for **Claude Code**, **Antigravity (agy)**, **OpenCode**, and
 
 - **Audits** structural noise: deep nesting (>2 levels), anonymous closures in argument position, raw conditionals, duplicated literals, and commented-out dead code.
 - **Auto-fixes** algebraic simplifications with `--fix` (De Morgan's laws, `endsWith` shortcuts, and boolean return cleanups).
-- **Validates** that the noise score is strictly lower after the refactor with **0 external dependencies** (standard Python library only).
+- **Validates** that the noise score is strictly lower after the refactor with compiled native Zig engine with zero external runtime dependencies.
 
 ---
 
@@ -32,7 +32,6 @@ Flags:
 - `./install.sh --claude`: Configures Claude Code only.
 - `./install.sh --opencode`: Configures OpenCode only.
 - `./install.sh --codex`: Configures OpenAI Codex only.
-- `./install.sh --update`: Pulls latest git changes, re-syncs manifests, and reloads plugin registrations across environments.
 
 ---
 
@@ -244,7 +243,6 @@ Optional configuration files placed in the repository root:
 {
   "max_nesting": 2,
   "max_closure_len": 80,
-  "detect_commented_code": true,
   "ignore_patterns": [
     "node_modules",
     "vendor",
@@ -302,7 +300,7 @@ zero-noise/
 │   ├── root.zig                     # Library root module
 │   ├── analysis/                    # Cognitive complexity, noise, and blast radius
 │   ├── mutation/                    # Algebraic rewriter and transactional runner
-│   ├── storage/                     # SQLite WAL db and state-lock ledger
+│   ├── storage/                     # In-memory state database and state-lock ledger
 │   ├── treesitter/                  # Tree-sitter C ABI bindings and grammars
 │   ├── mcp/                         # JSON-RPC 2.0 stdio server & protocol
 │   └── cli/                         # Subcommand handlers

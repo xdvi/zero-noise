@@ -16,13 +16,13 @@ The refactor suite provides 7 tools available as native MCP tools or native CLI 
 
 | Tool | CLI Command | Description |
 |------|-------------|-------------|
-| `inspect_evidence` | `zero-noise audit --format=compact` | Unified Evidence Contract crossing noise, complexity, and blast radius with state lock |
+| `inspect_evidence` | `zero-noise audit --format=compact` | Full Evidence Pack with `state_lock_sha256` via MCP (`zero-noise audit --format=compact` formats structural noise findings compactly) |
 | `audit_noise` | `zero-noise audit` | Structural noise linter (nesting > 2, closures > 80 chars, raw booleans, commented code) |
 | `refactor_helper` | `zero-noise refactor --dry-run` | DRY duplicate literals and algebraic boolean simplifications |
 | `complexity` | `zero-noise complexity` | SonarSource Cognitive Complexity per function (threshold default: 15) |
 | `blast_radius` | `zero-noise blast` | Symbol usages, definitions, and cross-module blast radius |
 | `safe_refactor` | `zero-noise refactor` | Test-bracketed refactoring with state-lock hash verification and atomic rollback |
-| `evaluate_rules` | `zero-noise audit` | Declarative anti-pattern rules from `.zero-noise-rules.json` |
+| `evaluate_rules` | `zero-noise mcp` | Available via MCP (`zero-noise mcp`) to evaluate declarative rules from `.zero-noise-rules.json` |
 
 ## When NOT to Use
 
@@ -39,7 +39,7 @@ Skip refactoring on:
    - Abort immediately if the target falls under **When NOT to Use**.
 
 2. **Step 1: Evidence, Structural & Complexity Audit:**
-   - Generate the unified Evidence Pack (`inspect_evidence` via MCP or `zero-noise audit <target-path> --format=compact`) and capture `state_lock_sha256` (`expected_hash`).
+   - Generate evidence: use `inspect_evidence` via MCP to generate the full Evidence Pack with `state_lock_sha256` (`expected_hash`), or run `zero-noise audit <target-path> --format=compact` to format structural noise findings compactly in the CLI.
    - Run structural noise and cognitive complexity checks:
      ```bash
      zero-noise audit <target-path>

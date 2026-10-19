@@ -273,7 +273,7 @@ fn walkTreeForSymbol(
                 .line = pt.row + 1,
                 .column = pt.column + 1,
                 .is_definition = is_def,
-                .snippet = "",
+                .snippet = snippet,
             });
             return;
         }
@@ -750,7 +750,7 @@ fn processScanLine(
                 .line = line_no,
                 .column = @intCast(idx + 1),
                 .is_definition = is_def,
-                .snippet = "",
+                .snippet = snippet,
             });
         }
         search_pos = idx + symbol.len;

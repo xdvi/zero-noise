@@ -2,14 +2,11 @@ const std = @import("std");
 const grammars = @import("../treesitter/grammars.zig");
 
 pub fn getStringArg(args: ?std.json.Value, key: []const u8) ?[]const u8 {
-    if (args) |v| {
-        if (v == .object) {
-            if (v.object.get(key)) |val| {
-                if (val == .string) return val.string;
-            }
-        }
-    }
-    return null;
+    const v = args orelse return null;
+    if (v != .object) return null;
+    const val = v.object.get(key) orelse return null;
+    if (val != .string) return null;
+    return val.string;
 }
 
 pub fn getIntArg(args: ?std.json.Value, key: []const u8, default_val: i64) i64 {

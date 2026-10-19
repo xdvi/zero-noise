@@ -33,10 +33,18 @@ pub fn executeAudit(allocator: std.mem.Allocator, args: []const []const u8, out_
     var total_findings: usize = 0;
 
     for (paths_list.items) |path| {
-        const res = try audit_tool.executeAuditNoiseDirect(allocator, .{
-            .path = path,
-            .format = format,
-        }, &default_deps);
+        const res = if (std.mem.eql(u8, format, "evidence")) blk: {
+            var map: std.json.ObjectMap = .empty;
+            defer map.deinit(allocator);
+            try map.put(allocator, "path", .{ .string = path });
+            try map.put(allocator, "format", .{ .string = format });
+            break :blk try audit_tool.executeAuditNoiseWithDeps(allocator, .{ .object = map }, &default_deps);
+        } else blk: {
+            break :blk try audit_tool.executeAuditNoiseDirect(allocator, .{
+                .path = path,
+                .format = format,
+            }, &default_deps);
+        };
         defer res.deinit(allocator);
 
         try out_list.appendSlice(allocator, res.text);
@@ -72,4 +80,15 @@ test "audit cli clean path returns exit code 0" {
     const code = try executeAudit(allocator, &args, &out_list);
     try std.testing.expectEqual(0, code);
     try std.testing.expect(std.mem.indexOf(u8, out_list.items, "0 structural noise violations detected.") != null);
+}
+
+test "audit cli format=evidence outputs evidence contract json" {
+    const allocator = std.testing.allocator;
+    const args = [_][]const u8{ "tests/fixtures/dirty/noisy_typescript.ts", "--format=evidence" };
+    var out_list: std.ArrayList(u8) = .empty;
+    defer out_list.deinit(allocator);
+
+    _ = try executeAudit(allocator, &args, &out_list);
+    try std.testing.expect(std.mem.indexOf(u8, out_list.items, "state_lock_sha256") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out_list.items, "blast_radius_risk") != null);
 }
