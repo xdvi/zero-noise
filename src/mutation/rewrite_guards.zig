@@ -842,9 +842,15 @@ test "nested eligible ifs keep only the innermost" {
     try expectGuarded(source, .typescript, expected);
 }
 
-test "unannotated arrow function without value returns stays eligible" {
+test "arrow function with void annotation stays eligible" {
     const source = "const process = (user: User): void => {\n  if (user.isActive) {\n    sendEmail(user);\n  }\n};\n";
     const expected = "const process = (user: User): void => {\n  if (!(user.isActive)) { return; }\n  sendEmail(user);\n};\n";
+    try expectGuarded(source, .typescript, expected);
+}
+
+test "unannotated arrow function without value returns stays eligible" {
+    const source = "const process = (user: User) => {\n  if (user.isActive) {\n    sendEmail(user);\n  }\n};\n";
+    const expected = "const process = (user: User) => {\n  if (!(user.isActive)) { return; }\n  sendEmail(user);\n};\n";
     try expectGuarded(source, .typescript, expected);
 }
 

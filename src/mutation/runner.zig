@@ -868,6 +868,36 @@ test "misclassified guard patch aborts" {
     try std.testing.expectEqualStrings(GUARD_FIXTURE, read_back);
 }
 
+test "predicate patch without test_cmd aborts" {
+    const allocator = std.testing.allocator;
+    const tmp_path = ".test_predicate_needs_tests.ts";
+    try writeFile(tmp_path, GUARD_FIXTURE);
+    defer _ = std.c.unlink(tmp_path);
+
+    const hash = try fileSha256(allocator, GUARD_FIXTURE);
+    defer allocator.free(hash);
+
+    // A candidate that reproduces no engine proposal, so the declared kind stands.
+    const candidate = GUARD_FIXTURE ++ "// touched\n";
+
+    const result = try executeSafeRefactor(allocator, .{
+        .filepath = tmp_path,
+        .hash = .{ .expected_hash = hash },
+        .patch = .{ .candidate_content = candidate, .patch_kind = "predicate" },
+        .fix = true,
+    });
+    var res = result;
+    defer res.deinit(allocator);
+
+    try std.testing.expectEqual(RefactorStatus.aborted, res.status);
+    try std.testing.expect(res.error_msg != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.error_msg.?, "test_cmd required for guard/predicate patches") != null);
+
+    const read_back = try readFileAlloc(allocator, tmp_path);
+    defer allocator.free(read_back);
+    try std.testing.expectEqualStrings(GUARD_FIXTURE, read_back);
+}
+
 test "declared manual candidate applies without engine match" {
     const allocator = std.testing.allocator;
     const tmp_path = ".test_declared_manual.ts";
