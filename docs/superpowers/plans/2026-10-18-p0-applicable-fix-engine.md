@@ -24,6 +24,20 @@
 - Deterministic output: identical input yields byte-identical proposals, patches, and composed candidates.
 - Conventional Commits, no attribution trailers.
 
+## Execution Strategy
+
+Foundation (Tasks 1–3) is implemented first and merged to `main`; Task 4 (manifest) runs in parallel on its own worktree because it shares no files with the foundation.
+
+Task 3 pre-wires parallel-safe registration: it creates stub modules for all four passes (`rewrite_guards.zig`, `rewrite_constants.zig`, `rewrite_predicates.zig`, `rewrite_closures.zig`), each exposing `pub fn supportedLanguages() []const grammars.Language` (initially empty) and the `PassFn` `collect`, and registers them in `propose.zig` and `root.zig`; capability is `contains(supportedLanguages(), lang)`. Pass tasks then modify only their own module file — no shared-file edits — so streams merge cleanly.
+
+Worktree streams (each merges to `main` when its tests pass):
+
+- Stream G (guards): Tasks 5 → 6 → 7 → 8
+- Stream C (constants): Tasks 9 → 10 → 11
+- Stream P (predicates + closures): Tasks 12 → 13 → 14 → 15
+- Stream I (apply + surfaces): Tasks 16 → 17 → 18 → 22 (starts after Stream G's Task 5 is merged, since its tests use guard proposals)
+- Task 19 and Task 21 run after any pass is enabled; Task 20 (docs) runs last, after Stream I.
+
 ## Review Focus
 
 Uncovered failure modes to pin while reading — each has a test in the owning task:
@@ -153,7 +167,7 @@ test "compose with no proposals yields unchanged source and empty patch" }
 ### Task 3: Proposal orchestrator, capability matrix, and hash assignment
 
 **Files:**
-- Create: `src/mutation/propose.zig`
+- Create: `src/mutation/propose.zig`, plus stub `src/mutation/rewrite_guards.zig`, `src/mutation/rewrite_constants.zig`, `src/mutation/rewrite_predicates.zig`, `src/mutation/rewrite_closures.zig`
 - Modify: `src/root.zig`
 - Test: inline tests
 
@@ -165,7 +179,7 @@ test "compose with no proposals yields unchanged source and empty patch" }
 ```zig
 pub const KindFlags = struct { guard: bool = true, predicate: bool = true, constant: bool = true, closure: bool = true, boolean: bool = false };
 pub const Capability = enum { enabled, advisory };
-pub fn capabilityFor(kind: ProposalKind, lang: grammars.Language) Capability; // advisory until a pass task enables the pair
+pub fn capabilityFor(kind: ProposalKind, lang: grammars.Language) Capability; // contains(pass.supportedLanguages(), lang) ? enabled : advisory
 pub const PassFn = *const fn (std.mem.Allocator, []const u8, grammars.Language, bindings.TSNode) anyerror![]proposal.Proposal;
 pub const CollectResult = struct { proposals: []proposal.Proposal, limitations: [][]const u8, parse_error: bool };
 pub fn collectProposals(allocator, source, lang, flags: KindFlags) !CollectResult;
@@ -173,6 +187,8 @@ pub fn deinitCollectResult(allocator, *CollectResult) void;
 ```
 
 `collectProposals` computes `sha256(source)` once and assigns it to every proposal's `expected_hash` (passes may leave the field empty).
+
+Each pass module exposes `pub fn supportedLanguages() []const grammars.Language` plus the `PassFn` `collect`; Task 3 creates all four as stubs (empty list, `collect` returns `&.{}`) and registers them — pass tasks only edit their own module.
 
 - [ ] **Step 1: Write failing tests**
 
@@ -186,7 +202,7 @@ test "advisory capability adds a limitation entry" { /* capabilityFor(.predicate
 
 - [ ] **Step 2: `zig build test` — expect FAIL.**
 
-- [ ] **Step 3: Implement** — parse once with the thread parser; run enabled passes whose capability is `enabled`; for `advisory` pairs append `"<kind> extraction not enabled for <lang> (advisory)"` to `limitations`; sort proposals by `(line, col, kindName, rule)`; deduplicate identical `(kind, line, col)`.
+- [ ] **Step 3: Implement** — parse once with the thread parser; run enabled passes whose capability is `enabled`; for `advisory` pairs append `"<kind> extraction not enabled for <lang> (advisory)"` to `limitations`; sort proposals by `(line, col, kindName, rule)`; deduplicate identical `(kind, line, col)`. Create the four stub pass modules and register them (registry maps kind → module).
 
 - [ ] **Step 4: `zig build test` — PASS.**
 
@@ -214,8 +230,7 @@ test "advisory capability adds a limitation entry" { /* capabilityFor(.predicate
 ### Task 5: Guard pass — core + TypeScript/TSX
 
 **Files:**
-- Create: `src/mutation/rewrite_guards.zig`
-- Modify: `src/mutation/propose.zig` (register pass; set capability for `typescript`, `tsx`)
+- Modify: `src/mutation/rewrite_guards.zig` (stub from Task 3; add `typescript`, `tsx` to `supportedLanguages()`)
 - Test: inline tests
 
 **Interfaces:**
@@ -288,7 +303,7 @@ test "nested eligible ifs keep only the innermost" }
 ### Task 6: Guard pass — Go and Zig
 
 **Files:**
-- Modify: `src/mutation/rewrite_guards.zig`, `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_guards.zig` (add `.go`, `.zig` to `supportedLanguages()`)
 - Test: inline tests
 
 **Interfaces:**
@@ -306,7 +321,7 @@ test "nested eligible ifs keep only the innermost" }
 ### Task 7: Guard pass — Rust and Python
 
 **Files:**
-- Modify: `src/mutation/rewrite_guards.zig`, `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_guards.zig` (add `.rust`, `.python` to `supportedLanguages()`)
 - Test: inline tests
 
 **Interfaces:**
@@ -335,7 +350,7 @@ def process(user):
 ### Task 8: Guard pass — C#
 
 **Files:**
-- Modify: `src/mutation/rewrite_guards.zig`, `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_guards.zig` (add `.c_sharp` to `supportedLanguages()`)
 - Test: inline tests
 
 **Interfaces:**
@@ -352,8 +367,7 @@ def process(user):
 ### Task 9: Constants pass — TypeScript and Python
 
 **Files:**
-- Create: `src/mutation/rewrite_constants.zig`
-- Modify: `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_constants.zig` (stub from Task 3; add `typescript`, `tsx`, `.python`)
 - Test: inline tests
 
 **Interfaces:**
@@ -389,7 +403,7 @@ test "python without imports keeps module docstring first" { /* docstring + repe
 ### Task 10: Constants pass — Go and Zig
 
 **Files:**
-- Modify: `src/mutation/rewrite_constants.zig`, `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_constants.zig` (add `.go`, `.zig`)
 - Test: inline tests
 
 **Interfaces:**
@@ -407,7 +421,7 @@ test "python without imports keeps module docstring first" { /* docstring + repe
 ### Task 11: Constants pass — Rust (strings only) and C#
 
 **Files:**
-- Modify: `src/mutation/rewrite_constants.zig`, `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_constants.zig` (add `.rust`, `.c_sharp`)
 - Test: inline tests
 
 **Interfaces:**
@@ -425,8 +439,7 @@ test "python without imports keeps module docstring first" { /* docstring + repe
 ### Task 12: Predicate pass — TypeScript/TSX
 
 **Files:**
-- Create: `src/mutation/rewrite_predicates.zig`
-- Modify: `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_predicates.zig` (stub from Task 3; add `typescript`, `tsx`)
 - Test: inline tests
 
 **Interfaces:**
@@ -457,7 +470,7 @@ test "name collision appends suffix" }
 ### Task 13: Predicate pass — Python
 
 **Files:**
-- Modify: `src/mutation/rewrite_predicates.zig`, `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_predicates.zig` (add `.python`)
 - Test: inline tests
 
 **Interfaces:**
@@ -481,8 +494,7 @@ inserted immediately before the enclosing `function_definition`, condition repla
 ### Task 14: Closure pass — TypeScript/TSX
 
 **Files:**
-- Create: `src/mutation/rewrite_closures.zig`
-- Modify: `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_closures.zig` (stub from Task 3; add `typescript`, `tsx`)
 - Test: inline tests
 
 **Interfaces:**
@@ -508,7 +520,7 @@ Emit a `function <name>(<params>) { <body> }` declaration immediately before the
 ### Task 15: Closure pass — Python
 
 **Files:**
-- Modify: `src/mutation/rewrite_closures.zig`, `src/mutation/propose.zig`
+- Modify: `src/mutation/rewrite_closures.zig` (add `.python`)
 - Test: inline tests
 
 **Interfaces:**
