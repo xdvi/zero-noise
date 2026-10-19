@@ -50,6 +50,8 @@ const scenarios = [_]Scenario{
     .{ .name = "audit-json", .args = &.{ "audit", "src", "--format=json" } },
     .{ .name = "complexity", .args = &.{ "complexity", "src", "--threshold=100" } },
     .{ .name = "blast", .args = &.{ "blast", "executeSafeRefactor", "--root=src" } },
+    .{ .name = "plan-dirty", .args = &.{ "plan", "tests/fixtures/dirty", "--format=json" } },
+    .{ .name = "plan-compose", .args = &.{ "plan", "tests/fixtures/dirty/noisy_typescript.ts", "--compose" } },
     .{ .name = "startup", .args = &.{"version"} },
 };
 
