@@ -166,17 +166,22 @@ is machine-applicable. Guard clauses, predicates, and constants are left to the 
      be synthesized safely, the proposal downgrades to advisory instead of
      applicable.
 3. **Proposal model:** every finding can carry `confidence` (high/medium/low),
-   `patch` (unified diff), `naming_required`, and `safe_to_apply`. Emitted on demand,
-   not by default, to keep agent output token-frugal.
+   `patch` (unified diff), `naming_required`, `safe_to_apply`, and the source file's
+   SHA-256 at proposal time (`expected_hash`), so applications always lock against the
+   planned revision. Non-overlapping proposals compose into a single candidate;
+   overlaps are listed as conflicts. Emitted on demand, not by default, to keep agent
+   output token-frugal.
 4. **Surfaces:**
    - CLI: `zero-noise plan <path>` (dry-run proposals; text/json/compact).
    - MCP: new `propose_fixes` tool (file or root; paginated; patches opt-in).
    - `refactor_helper` stays contract-compatible and now references proposals.
 5. **Apply:** `safe_refactor` accepts `candidate_content`, `patch_file`, and (new,
    additive) `patch_content` and `patch_kind`, with hash lock, syntax validation,
-   and rollback. Tests stay optional for boolean, constant, and closure transforms;
-   guard and predicate patches are rejected without a `test_cmd` — enforced by the
-   engine, not only by the skill workflow.
+   and rollback. Applying a patch requires an explicit `patch_kind` (omitted or
+   unknown values are rejected); a patch that exactly reproduces an engine proposal
+   must declare its true kind, and mismatches abort. Tests stay optional for boolean,
+   constant, and closure transforms; guard and predicate patches are rejected
+   without a `test_cmd` — enforced by the engine, not only by the skill workflow.
 
 **Acceptance:**
 
@@ -322,7 +327,8 @@ open to objection.
 
 - **P0 composition:** multiple proposals per file merge into one candidate when their
   edits do not overlap; overlaps are flagged; any apply invalidates sibling proposals
-  via the file hash and forces a re-plan.
+  via the file hash and forces a re-plan. Composition is a public surface
+  (`propose_fixes(compose=true)`, `plan --compose`), not only an internal helper.
 - **P0 rule coverage:** guards (nesting), constants (repeated literals), predicates
   (raw booleans), and closure extraction (long closures) become machine-applicable;
   closure extraction ships last within P0. Commented-out code stays advisory.
@@ -330,10 +336,12 @@ open to objection.
   exported; collision-checked names; downgrade to advisory when naming or typing is
   unsafe to synthesize.
 - **Guard safety bar:** a closed per-language syntactic allowlist plus the test
-  bracket. `safe_to_apply` is false unless the allowlist is proven; `confidence` only
-  ranks priority. `test_cmd` is mandatory — enforced by the engine — for applying
-  guard or predicate patches; boolean, constant, and closure transforms keep it
-  optional with mandatory hash lock and syntax validation.
+  bracket. The allowlist includes tail position: no executable statements may follow
+  the guarded `if` up the block chain to the function body, and the chain must contain
+  no loop, switch, or handler block. `safe_to_apply` is false unless the allowlist is
+  proven; `confidence` only ranks priority. `test_cmd` is mandatory — enforced by the
+  engine — for applying guard or predicate patches; boolean, constant, and closure
+  transforms keep it optional with mandatory hash lock and syntax validation.
 - **Baseline identity:** per-file, per-rule counts in schema v1; fingerprints deferred.
   New parse errors on previously parsing files count as regressions; deletions are
   ignored; renames are new-plus-removed; config and version drift warn, with strict
