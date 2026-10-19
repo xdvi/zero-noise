@@ -21,5 +21,21 @@
     "rust",
     "python",
     "csharp"
+  ],
+  "cli_commands": [
+    "mcp",
+    "audit",
+    "complexity",
+    "blast",
+    "refactor"
+  ],
+  "mcp_tools": [
+    "inspect_evidence",
+    "audit_noise",
+    "refactor_helper",
+    "complexity",
+    "blast_radius",
+    "safe_refactor",
+    "evaluate_rules"
   ]
 }
