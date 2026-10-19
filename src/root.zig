@@ -47,6 +47,7 @@ pub const mcp = struct {
         pub const blast_radius = @import("mcp/tools/blast_radius.zig");
         pub const inspect_evidence = @import("mcp/tools/inspect_evidence.zig");
         pub const safe_refactor = @import("mcp/tools/safe_refactor.zig");
+        pub const propose_fixes = @import("mcp/tools/propose_fixes.zig");
         pub const complexity = @import("mcp/tools/complexity.zig");
         pub const evaluate_rules = @import("mcp/tools/evaluate_rules.zig");
     };
@@ -57,6 +58,7 @@ pub const cli = struct {
     pub const complexity = @import("cli/complexity.zig");
     pub const blast = @import("cli/blast.zig");
     pub const refactor = @import("cli/refactor.zig");
+    pub const plan = @import("cli/plan.zig");
 };
 
 pub fn getSqliteVersion() [*:0]const u8 {
@@ -95,11 +97,14 @@ test {
     _ = @import("mcp/tools/blast_radius.zig");
     _ = @import("mcp/tools/inspect_evidence.zig");
     _ = @import("mcp/tools/safe_refactor.zig");
+    _ = @import("mcp/tools/propose_fixes.zig");
     _ = @import("mcp/tools/complexity.zig");
     _ = @import("mcp/tools/evaluate_rules.zig");
     _ = @import("mcp/server.zig");
+    _ = @import("mcp/app.zig");
     _ = @import("cli/audit.zig");
     _ = @import("cli/complexity.zig");
     _ = @import("cli/blast.zig");
     _ = @import("cli/refactor.zig");
+    _ = @import("cli/plan.zig");
 }

@@ -18,9 +18,11 @@ pub const SafeRefactorParams = struct {
     root: []const u8 = ".",
     max_blast_risk: ?[]const u8 = null,
     patch_file: ?[]const u8 = null,
+    patch_content: ?[]const u8 = null,
+    patch_kind: ?[]const u8 = null,
     candidate_content: ?[]const u8 = null,
     force: bool = false,
-    fix: bool = true,
+    fix: bool = false,
 };
 
 const Args = SafeRefactorParams;
@@ -34,9 +36,11 @@ fn parseArgs(args: ?std.json.Value) SafeRefactorParams {
         .root = common.getStringArg(args, "root") orelse ".",
         .max_blast_risk = common.getStringArg(args, "max_blast_risk"),
         .patch_file = common.getStringArg(args, "patch_file"),
+        .patch_content = common.getStringArg(args, "patch_content"),
+        .patch_kind = common.getStringArg(args, "patch_kind"),
         .candidate_content = common.getStringArg(args, "candidate_content"),
         .force = common.getBoolArg(args, "force", false),
-        .fix = common.getBoolArg(args, "fix", true),
+        .fix = common.getBoolArg(args, "fix", false),
     };
 }
 
@@ -48,6 +52,8 @@ pub fn executeSafeRefactorDirect(allocator: std.mem.Allocator, params: SafeRefac
     const root = params.root;
     const max_blast_risk_str = params.max_blast_risk;
     const patch_file = params.patch_file;
+    const patch_content = params.patch_content;
+    const patch_kind = params.patch_kind;
     const candidate_content = params.candidate_content;
     var target_patch: ?[]const u8 = null;
     defer if (target_patch) |tp| allocator.free(tp);
@@ -78,10 +84,11 @@ pub fn executeSafeRefactorDirect(allocator: std.mem.Allocator, params: SafeRefac
         return blocked;
     }
 
-    const simplified_from_deps = prepareCandidate(allocator, deps, filepath, candidate_content, patch_file, target_patch);
+    const simplified_from_deps = prepareCandidate(allocator, deps, filepath, candidate_content, patch_content, patch_file, target_patch);
     defer if (simplified_from_deps) |sc| allocator.free(sc);
 
     const effective_candidate = if (candidate_content) |cc| cc else simplified_from_deps;
+    const effective_patch = patch_content orelse target_patch;
 
     return runSafeRefactorAndFormat(
         allocator,
@@ -91,7 +98,8 @@ pub fn executeSafeRefactorDirect(allocator: std.mem.Allocator, params: SafeRefac
         test_cmd,
         fix,
         patch_file,
-        target_patch,
+        effective_patch,
+        patch_kind,
         effective_candidate,
         maybe_ledger,
         task_id,
@@ -121,7 +129,11 @@ fn formatSafeRefactorResult(
         defer buf.deinit(allocator);
         try buf.appendSlice(allocator, "{\"filepath\":");
         try common.appendJsonEscaped(&buf, allocator, filepath);
-        try buf.print(allocator, ",\"status\":\"{s}\",\"diff\":", .{status_str});
+        try buf.print(allocator, ",\"status\":\"{s}\"", .{status_str});
+        if (result.classification) |classification| {
+            try buf.print(allocator, ",\"classification\":\"{s}\"", .{classification.asString()});
+        }
+        try buf.appendSlice(allocator, ",\"diff\":");
         try common.appendJsonEscaped(&buf, allocator, result.diff);
         if (result.error_msg) |em| {
             try buf.appendSlice(allocator, ",\"error\":");
@@ -280,7 +292,8 @@ fn runSafeRefactorAndFormat(
     test_cmd: ?[]const u8,
     fix: bool,
     patch_file: ?[]const u8,
-    target_patch: ?[]const u8,
+    patch_content: ?[]const u8,
+    patch_kind: ?[]const u8,
     effective_candidate: ?[]const u8,
     maybe_ledger: ?ledger_mod.RefactorLedger,
     task_id: ?[]const u8,
@@ -294,7 +307,8 @@ fn runSafeRefactorAndFormat(
         .patch = .{
             .candidate_content = effective_candidate,
             .patch_file = patch_file,
-            .patch_content = target_patch,
+            .patch_content = patch_content,
+            .patch_kind = patch_kind,
         },
     }) catch |err| {
         if (ledger) |*l| {
@@ -317,10 +331,11 @@ fn prepareCandidate(
     deps: *const deps_mod.Deps,
     filepath: []const u8,
     candidate_content: ?[]const u8,
+    patch_content: ?[]const u8,
     patch_file: ?[]const u8,
     target_patch: ?[]const u8,
 ) ?[]u8 {
-    if (candidate_content != null or patch_file != null or target_patch != null) return null;
+    if (candidate_content != null or patch_content != null or patch_file != null or target_patch != null) return null;
     const original_content = deps.fs.readFileAlloc(allocator, filepath) catch return null;
     defer allocator.free(original_content);
     return deps.simplify(allocator, original_content) catch null;
@@ -333,4 +348,33 @@ fn updateLedgerStatus(ledger: ?ledger_mod.RefactorLedger, task_id: ?[]const u8, 
             ll.updateTaskStatus(tid, status) catch {};
         }
     }
+}
+
+test "mcp safe_refactor fix defaults to dry-run" {
+    const allocator = std.testing.allocator;
+    const io = std.Options.debug_io;
+    const tmp_path = "tests/.test_mcp_fix_default.ts";
+    try runner.writeFile(tmp_path, "const ok = valid ? true : false;\n");
+    defer {
+        std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
+        std.Io.Dir.cwd().deleteFile(io, "tests/.zero-noise/zero-noise.db") catch {};
+        std.Io.Dir.cwd().deleteFile(io, "tests/.zero-noise/zero-noise.db-wal") catch {};
+        std.Io.Dir.cwd().deleteFile(io, "tests/.zero-noise/zero-noise.db-shm") catch {};
+        std.Io.Dir.cwd().deleteDir(io, "tests/.zero-noise") catch {};
+    }
+
+    const args_json = "{\"filepath\":\"" ++ tmp_path ++ "\",\"root\":\"tests\",\"format\":\"json\"}";
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, args_json, .{});
+    defer parsed.deinit();
+
+    const default = deps_mod.defaultDeps();
+    const res = try executeSafeRefactorWithDeps(allocator, parsed.value, &default);
+    defer res.deinit(allocator);
+
+    try std.testing.expect(!res.is_error);
+    try std.testing.expect(std.mem.indexOf(u8, res.text, "\"status\":\"dry_run\"") != null);
+
+    const read_back = try runner.readFileAlloc(allocator, tmp_path);
+    defer allocator.free(read_back);
+    try std.testing.expectEqualStrings("const ok = valid ? true : false;\n", read_back);
 }

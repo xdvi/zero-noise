@@ -27,7 +27,8 @@
     "audit",
     "complexity",
     "blast",
-    "refactor"
+    "refactor",
+    "plan"
   ],
   "mcp_tools": [
     "inspect_evidence",
@@ -36,6 +37,7 @@
     "complexity",
     "blast_radius",
     "safe_refactor",
+    "propose_fixes",
     "evaluate_rules"
   ]
 }

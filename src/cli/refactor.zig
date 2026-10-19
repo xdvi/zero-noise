@@ -8,7 +8,7 @@ pub fn run(allocator: std.mem.Allocator, args: []const []const u8, io: std.Io, s
 
     const code = try executeRefactor(allocator, args, &out_list);
     if (code != 0 and out_list.items.len == 0) {
-        try stderr.writeStreamingAll(io, "Error: zero-noise refactor requires a <file> argument.\nUsage: zero-noise refactor <file> [--fix] [--dry-run] [--expected-hash=<hash>] [--format=text|json|compact]\n");
+        try stderr.writeStreamingAll(io, "Error: zero-noise refactor requires a <file> argument.\nUsage: zero-noise refactor <file> [--fix] [--dry-run] [--expected-hash=<hash>] [--test-cmd=<cmd>] [--patch-file=<path>] [--patch-kind=<kind>] [--format=text|json|compact]\n");
         return code;
     }
     try stdout.writeStreamingAll(io, out_list.items);
@@ -26,6 +26,8 @@ pub fn executeRefactor(allocator: std.mem.Allocator, args: []const []const u8, o
         .fix = parsed.fix,
         .expected_hash = parsed.expected_hash,
         .test_cmd = parsed.test_cmd,
+        .patch_file = parsed.patch_file,
+        .patch_kind = parsed.patch_kind,
     }, &default_deps);
     defer res.deinit(allocator);
 
@@ -43,6 +45,8 @@ const RefactorArgs = struct {
     fix: bool = false,
     expected_hash: ?[]const u8 = null,
     test_cmd: ?[]const u8 = null,
+    patch_file: ?[]const u8 = null,
+    patch_kind: ?[]const u8 = null,
 };
 
 fn parseRefactorArgs(args: []const []const u8) RefactorArgs {
@@ -60,6 +64,10 @@ fn applyRefactorArg(parsed: *RefactorArgs, arg: []const u8) void {
         parsed.expected_hash = arg["--expected-hash=".len..];
     } else if (std.mem.startsWith(u8, arg, "--test-cmd=")) {
         parsed.test_cmd = arg["--test-cmd=".len..];
+    } else if (std.mem.startsWith(u8, arg, "--patch-file=")) {
+        parsed.patch_file = arg["--patch-file=".len..];
+    } else if (std.mem.startsWith(u8, arg, "--patch-kind=")) {
+        parsed.patch_kind = arg["--patch-kind=".len..];
     } else if (std.mem.eql(u8, arg, "--fix")) {
         parsed.fix = true;
     } else if (std.mem.eql(u8, arg, "--dry-run")) {
