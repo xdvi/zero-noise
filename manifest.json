@@ -1,7 +1,7 @@
 {
   "name": "zero-noise",
   "version": "0.1.0",
-  "description": "Zero-noise refactor skill: DRY, early return, semantic predicates, and algebraic simplification for Go, Rust, TypeScript, Python, and C#.",
+  "description": "Zero-noise refactor skill: DRY, early return, semantic predicates, and algebraic simplification for Go, Rust, TypeScript, Python, C#, and Zig.",
   "author": {
     "name": "David",
     "url": "https://github.com/xdvi"
@@ -20,7 +20,8 @@
     "typescript",
     "rust",
     "python",
-    "csharp"
+    "csharp",
+    "zig"
   ],
   "cli_commands": [
     "mcp",

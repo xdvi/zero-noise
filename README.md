@@ -2,7 +2,7 @@
 
 > Structural silence. Clean code that means what it says.
 
-A universal plugin for **Claude Code**, **Antigravity (agy)**, **OpenCode**, and **OpenAI Codex** (with support for **Kimi**, **Grok**, and any MCP-compliant agent) that enforces zero-noise refactoring: DRY, early return, semantic predicates, and algebraic simplification — across Go, Rust, TypeScript, Python, and C#.
+A universal plugin for **Claude Code**, **Antigravity (agy)**, **OpenCode**, and **OpenAI Codex** (with support for **Kimi**, **Grok**, and any MCP-compliant agent) that enforces zero-noise refactoring: DRY, early return, semantic predicates, and algebraic simplification — across Go, Rust, TypeScript, Python, C#, and Zig.
 
 ---
 

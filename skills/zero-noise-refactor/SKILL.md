@@ -1,6 +1,6 @@
 ---
 name: zero-noise-refactor
-description: "Trigger: refactor code, clean code, DRY, early return, zero-noise, complexity. Refactor code for zero structural noise, flattening nested logic, naming domain predicates, and simplifying boolean expressions across Go, Rust, TS, Python, and C#."
+description: "Trigger: refactor code, clean code, DRY, early return, zero-noise, complexity. Refactor code for zero structural noise, flattening nested logic, naming domain predicates, and simplifying boolean expressions across Go, Rust, TS, Python, C#, and Zig."
 license: MIT
 metadata:
   author: David

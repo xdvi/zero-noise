@@ -1,6 +1,6 @@
 # zero-noise plugin
 
-**Stack**: Go · Rust · TypeScript · Python · C#  
+**Stack**: Go · Rust · TypeScript · Python · C# · Zig  
 **Trigger**: refactor, clean code, DRY, early return, zero-noise, reduce complexity
 
 ## Skills
