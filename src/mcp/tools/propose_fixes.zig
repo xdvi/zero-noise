@@ -137,6 +137,12 @@ pub fn collectProposalReport(
         try ingestFile(allocator, deps, file_path, selection.flags, params.include_patches, &items, &limitations);
     }
 
+    for (items.items) |*item| {
+        const display = try displayPath(allocator, params.root, item.proposal.file);
+        allocator.free(item.proposal.file);
+        item.proposal.file = display;
+    }
+
     var capabilities: std.EnumSet(proposal.ProposalKind) = .empty;
     for (ENGINE_KINDS) |kind| {
         var enabled = languages.items.len > 0;
@@ -185,6 +191,18 @@ pub fn collectProposalReport(
         .page = params.page,
         .page_size = params.page_size,
     };
+}
+
+/// Root-relative display path when `path` lives under `root`; otherwise the path as given.
+fn displayPath(allocator: std.mem.Allocator, root: []const u8, path: []const u8) ![]u8 {
+    const trimmed = std.mem.trimEnd(u8, root, "/\\");
+    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, ".")) return allocator.dupe(u8, path);
+    if (path.len > trimmed.len + 1 and std.mem.startsWith(u8, path, trimmed) and
+        (path[trimmed.len] == '/' or path[trimmed.len] == '\\'))
+    {
+        return allocator.dupe(u8, path[trimmed.len + 1 ..]);
+    }
+    return allocator.dupe(u8, path);
 }
 
 /// Requested kinds never fail the call: `boolean` gets a limitation entry and
@@ -594,6 +612,25 @@ test "propose_fixes returns paged proposals with expected_hash for a fixture fil
     try std.testing.expectEqual(false, first.get("naming_required").?.bool);
     try std.testing.expectEqual(true, first.get("safe_to_apply").?.bool);
     try std.testing.expectEqual(@as(usize, 64), first.get("expected_hash").?.string.len);
+}
+
+test "root is honored for proposal display paths" {
+    const allocator = std.testing.allocator;
+    const path = "tests/fixtures/dirty/noisy_typescript.ts";
+    const args_json = "{\"path\":\"" ++ path ++ "\",\"root\":\"tests/fixtures\",\"format\":\"json\"}";
+    var args = try fixtureArgs(allocator, args_json);
+    defer args.deinit();
+
+    const default = deps_mod.defaultDeps();
+    const res = try executeProposeFixesWithDeps(allocator, args.value, &default);
+    defer res.deinit(allocator);
+    try std.testing.expect(!res.is_error);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, res.text, .{});
+    defer parsed.deinit();
+    const proposals = parsed.value.object.get("proposals").?.array;
+    try std.testing.expect(proposals.items.len > 0);
+    try std.testing.expectEqualStrings("dirty/noisy_typescript.ts", proposals.items[0].object.get("file").?.string);
 }
 
 test "include_patches false omits patch field" {
