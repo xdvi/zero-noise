@@ -208,7 +208,7 @@ test "safe_refactor max_blast_risk enforcement" {
     try std.testing.expect(std.mem.indexOf(u8, abort_text, "exceeds maximum allowed risk") != null);
 
     // 2. Calling with force=true should bypass the gate
-    const force_req = "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"safe_refactor\",\"arguments\":{\"filepath\":\"tests/test_blast_a.go\",\"root\":\"tests\",\"max_blast_risk\":\"low\",\"force\":true,\"format\":\"json\"}}}";
+    const force_req = "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"safe_refactor\",\"arguments\":{\"filepath\":\"tests/test_blast_a.go\",\"root\":\"tests\",\"max_blast_risk\":\"low\",\"force\":true,\"fix\":true,\"patch_kind\":\"manual\",\"format\":\"json\"}}}";
     const force_resp = (try @import("server.zig").handleJsonRpcLine(allocator, force_req)).?;
     defer allocator.free(force_resp);
 
@@ -338,7 +338,7 @@ test "executeSafeRefactor with candidate_content and patch_file and ledger integ
 
     // 1. Refactor via candidate_content
     const cand_content = "package main\n\nfunc Sample() int {\n    return 2\n}\n";
-    const req1 = "{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/call\",\"params\":{\"name\":\"safe_refactor\",\"arguments\":{\"filepath\":\"tests/test_safe_refactor_mcp.go\",\"root\":\"tests\",\"candidate_content\":\"" ++ "package main\\n\\nfunc Sample() int {\\n    return 2\\n}\\n" ++ "\",\"format\":\"json\"}}}";
+    const req1 = "{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/call\",\"params\":{\"name\":\"safe_refactor\",\"arguments\":{\"filepath\":\"tests/test_safe_refactor_mcp.go\",\"root\":\"tests\",\"fix\":true,\"patch_kind\":\"manual\",\"candidate_content\":\"" ++ "package main\\n\\nfunc Sample() int {\\n    return 2\\n}\\n" ++ "\",\"format\":\"json\"}}}";
     const resp1 = (try @import("server.zig").handleJsonRpcLine(allocator, req1)).?;
     defer allocator.free(resp1);
 
@@ -366,7 +366,7 @@ test "executeSafeRefactor with candidate_content and patch_file and ledger integ
     pf.close(io);
     defer std.Io.Dir.cwd().deleteFile(io, patch_path) catch {};
 
-    const req2 = "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"name\":\"safe_refactor\",\"arguments\":{\"filepath\":\"tests/test_safe_refactor_mcp.go\",\"root\":\"tests\",\"patch_file\":\"tests/test_safe_refactor_mcp.patch\",\"format\":\"json\"}}}";
+    const req2 = "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"tools/call\",\"params\":{\"name\":\"safe_refactor\",\"arguments\":{\"filepath\":\"tests/test_safe_refactor_mcp.go\",\"root\":\"tests\",\"fix\":true,\"patch_kind\":\"manual\",\"patch_file\":\"tests/test_safe_refactor_mcp.patch\",\"format\":\"json\"}}}";
     const resp2 = (try @import("server.zig").handleJsonRpcLine(allocator, req2)).?;
     defer allocator.free(resp2);
 

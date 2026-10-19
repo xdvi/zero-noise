@@ -5,6 +5,10 @@ const io = @import("io.zig");
 const patch = @import("patch.zig");
 const syntax = @import("syntax.zig");
 const test_runner = @import("test_runner.zig");
+const edits = @import("edits.zig");
+const grammars = @import("../treesitter/grammars.zig");
+const proposal_mod = @import("proposal.zig");
+const propose = @import("propose.zig");
 
 pub const readFileAlloc = io.readFileAlloc;
 pub const writeFile = io.writeFile;
@@ -52,6 +56,21 @@ pub const PatchSource = struct {
     candidate_content: ?[]const u8 = null,
     patch_file: ?[]const u8 = null,
     patch_content: ?[]const u8 = null,
+    patch_kind: ?[]const u8 = null,
+};
+
+/// How the engine learned the patch kind: `verified` when the candidate bytes
+/// exactly reproduce one or more engine proposals, `declared` otherwise.
+pub const Classification = enum {
+    verified,
+    declared,
+
+    pub fn asString(self: Classification) []const u8 {
+        return switch (self) {
+            .verified => "verified",
+            .declared => "declared",
+        };
+    }
 };
 
 pub const SafeRefactorOptions = struct {
@@ -66,12 +85,160 @@ pub const SafeRefactorResult = struct {
     status: RefactorStatus,
     diff: []const u8,
     error_msg: ?[]const u8 = null,
+    classification: ?Classification = null,
 
     pub fn deinit(self: *SafeRefactorResult, allocator: std.mem.Allocator) void {
         allocator.free(self.diff);
         if (self.error_msg) |err| allocator.free(err);
     }
 };
+
+/// Every kind accepted on apply: the engine proposal kinds plus `manual` for
+/// free-form patches the engine cannot reproduce.
+const PATCH_KINDS = [_][]const u8{ "guard", "predicate", "constant", "closure", "boolean", "manual" };
+
+fn isKnownPatchKind(kind: []const u8) bool {
+    for (PATCH_KINDS) |known| {
+        if (std.mem.eql(u8, kind, known)) return true;
+    }
+    return false;
+}
+
+fn proposalKindFromName(name: []const u8) ?proposal_mod.ProposalKind {
+    if (std.mem.eql(u8, name, "guard")) return .guard;
+    if (std.mem.eql(u8, name, "predicate")) return .predicate;
+    if (std.mem.eql(u8, name, "constant")) return .constant;
+    if (std.mem.eql(u8, name, "closure")) return .closure;
+    if (std.mem.eql(u8, name, "boolean")) return .boolean;
+    return null;
+}
+
+fn hasPatchSource(p: PatchSource) bool {
+    return p.candidate_content != null or p.patch_file != null or p.patch_content != null;
+}
+
+fn abortedResult(allocator: std.mem.Allocator, err_msg: []u8) !SafeRefactorResult {
+    errdefer allocator.free(err_msg);
+    return .{
+        .status = .aborted,
+        .diff = try allocator.dupe(u8, ""),
+        .error_msg = err_msg,
+    };
+}
+
+/// Applying a supplied patch always declares its kind: absent or unknown
+/// values abort before the file is touched.
+fn enforcePatchKind(allocator: std.mem.Allocator, patch_source: PatchSource) !?SafeRefactorResult {
+    if (!hasPatchSource(patch_source)) return null;
+
+    const kind = patch_source.patch_kind orelse return try abortedResult(
+        allocator,
+        try allocator.dupe(u8, "error: patch_kind required for patch applications (one of guard|predicate|constant|closure|boolean|manual)"),
+    );
+    if (!isKnownPatchKind(kind)) {
+        return try abortedResult(
+            allocator,
+            try std.fmt.allocPrint(allocator, "error: unknown patch_kind '{s}' (one of guard|predicate|constant|closure|boolean|manual)", .{kind}),
+        );
+    }
+    return null;
+}
+
+const ClassificationOutcome = struct {
+    classification: Classification,
+    verified_kinds: std.EnumSet(proposal_mod.ProposalKind),
+    mismatch_msg: ?[]u8 = null,
+};
+
+/// Recomputes the engine proposals for the original source. When the candidate
+/// bytes exactly reproduce a single proposal or the greedy composition of
+/// several, the true kind set is known and a declared kind outside it aborts.
+/// Without an exact match the declared kind stands.
+fn classifyPatch(
+    allocator: std.mem.Allocator,
+    filepath: []const u8,
+    source: []const u8,
+    candidate: []const u8,
+    declared_kind: []const u8,
+) !ClassificationOutcome {
+    const lang = grammars.Language.fromPath(filepath);
+    var collected = try propose.collectProposals(allocator, source, lang, .{});
+    defer propose.deinitCollectResult(allocator, &collected);
+
+    var true_kinds: std.EnumSet(proposal_mod.ProposalKind) = .empty;
+    var verified = false;
+
+    for (collected.proposals) |p| {
+        if (!p.safe_to_apply or p.edits.len == 0) continue;
+
+        const sorted = try allocator.dupe(edits.Edit, p.edits);
+        defer allocator.free(sorted);
+        edits.sortEdits(sorted);
+
+        const applied = edits.apply(allocator, source, sorted) catch continue;
+        defer allocator.free(applied);
+        if (std.mem.eql(u8, applied, candidate)) {
+            verified = true;
+            true_kinds.insert(p.kind);
+        }
+    }
+
+    const basename = std.fs.path.basename(filepath);
+    var composed = try proposal_mod.compose(allocator, source, collected.proposals, basename);
+    defer proposal_mod.deinitComposeResult(allocator, &composed);
+    if (composed.applied.len > 0 and std.mem.eql(u8, composed.candidate, candidate)) {
+        verified = true;
+        for (composed.applied) |index| {
+            true_kinds.insert(collected.proposals[index].kind);
+        }
+    }
+
+    if (!verified) {
+        return .{ .classification = .declared, .verified_kinds = true_kinds };
+    }
+
+    const declared_matches = if (proposalKindFromName(declared_kind)) |declared_engine|
+        true_kinds.contains(declared_engine)
+    else
+        false;
+    if (declared_matches) {
+        return .{ .classification = .verified, .verified_kinds = true_kinds };
+    }
+
+    return .{
+        .classification = .verified,
+        .verified_kinds = true_kinds,
+        .mismatch_msg = try mismatchMessage(allocator, true_kinds, declared_kind),
+    };
+}
+
+fn mismatchMessage(
+    allocator: std.mem.Allocator,
+    true_kinds: std.EnumSet(proposal_mod.ProposalKind),
+    declared_kind: []const u8,
+) ![]u8 {
+    var kinds_list: std.ArrayList(u8) = .empty;
+    defer kinds_list.deinit(allocator);
+
+    for (std.enums.values(proposal_mod.ProposalKind)) |kind| {
+        if (!true_kinds.contains(kind)) continue;
+        if (kinds_list.items.len > 0) try kinds_list.append(allocator, ',');
+        try kinds_list.appendSlice(allocator, proposal_mod.kindName(kind));
+    }
+
+    return std.fmt.allocPrint(
+        allocator,
+        "classification mismatch: patch reproduces a {s} proposal but declares {s}",
+        .{ kinds_list.items, declared_kind },
+    );
+}
+
+fn requiresTestBracket(declared_kind: []const u8, outcome: ClassificationOutcome) bool {
+    if (outcome.classification == .verified) {
+        return outcome.verified_kinds.contains(.guard) or outcome.verified_kinds.contains(.predicate);
+    }
+    return std.mem.eql(u8, declared_kind, "guard") or std.mem.eql(u8, declared_kind, "predicate");
+}
 
 pub fn executeSafeRefactor(
     allocator: std.mem.Allocator,
@@ -120,6 +287,10 @@ pub fn executeSafeRefactor(
         }
     }
 
+    if (options.fix) {
+        if (try enforcePatchKind(allocator, options.patch)) |aborted| return aborted;
+    }
+
     const candidate = if (options.patch.candidate_content) |c|
         try allocator.dupe(u8, c)
     else if (options.patch.patch_content) |pc|
@@ -133,9 +304,11 @@ pub fn executeSafeRefactor(
 
     const basename = std.fs.path.basename(options.filepath);
     const diff = try patch.generateDiff(allocator, original_content, candidate, basename);
-    errdefer allocator.free(diff);
+    var diff_owned = true;
+    defer if (diff_owned) allocator.free(diff);
 
     if (!options.fix) {
+        diff_owned = false;
         return SafeRefactorResult{
             .status = .dry_run,
             .diff = diff,
@@ -143,7 +316,26 @@ pub fn executeSafeRefactor(
         };
     }
 
-    return applyCandidate(allocator, options, original_content, candidate, diff, basename);
+    var classification: ?Classification = null;
+    if (options.patch.patch_kind) |declared_kind| {
+        const outcome = try classifyPatch(allocator, options.filepath, original_content, candidate, declared_kind);
+        if (outcome.mismatch_msg) |mismatch| {
+            return abortedResult(allocator, mismatch);
+        }
+        classification = outcome.classification;
+
+        if (requiresTestBracket(declared_kind, outcome) and options.test_run.test_cmd == null) {
+            return abortedResult(
+                allocator,
+                try allocator.dupe(u8, "error: test_cmd required for guard/predicate patches; provide a test command before applying"),
+            );
+        }
+    }
+
+    var result = try applyCandidate(allocator, options, original_content, candidate, diff, basename);
+    diff_owned = false;
+    result.classification = classification;
+    return result;
 }
 
 test "state lock aborts on hash mismatch" {
@@ -226,7 +418,7 @@ test "syntax validation rolls back broken candidate" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .patch = .{ .candidate_content = broken_candidate },
+        .patch = .{ .candidate_content = broken_candidate, .patch_kind = "manual" },
         .fix = true,
     });
     var res = result;
@@ -359,7 +551,7 @@ test "syntax validation delta allows pre-existing syntax errors" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .patch = .{ .candidate_content = candidate },
+        .patch = .{ .candidate_content = candidate, .patch_kind = "manual" },
         .fix = true,
     });
     var res = result;
@@ -379,7 +571,7 @@ test "syntax validation delta rejects candidate introducing NEW syntax errors" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = tmp_path,
-        .patch = .{ .candidate_content = broken_candidate },
+        .patch = .{ .candidate_content = broken_candidate, .patch_kind = "manual" },
         .fix = true,
     });
     var res = result;
@@ -490,7 +682,7 @@ test "executeSafeRefactor with patch_file" {
 
     const result = try executeSafeRefactor(allocator, .{
         .filepath = target,
-        .patch = .{ .patch_file = patch_target },
+        .patch = .{ .patch_file = patch_target, .patch_kind = "manual" },
         .fix = true,
     });
     var res = result;
@@ -501,6 +693,254 @@ test "executeSafeRefactor with patch_file" {
     defer allocator.free(updated);
     try std.testing.expectEqualStrings("function foo() {\n    return 99;\n}\n", updated);
 }
+const GUARD_FIXTURE = "function process(user: User): void {\n  if (user.isActive) {\n    sendEmail(user);\n  }\n}\n";
+
+fn fileSha256(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    var sha = std.crypto.hash.sha2.Sha256.init(.{});
+    sha.update(content);
+    var digest: [32]u8 = undefined;
+    sha.final(&digest);
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    return allocator.dupe(u8, &hex);
+}
+
+const EnginePatch = struct {
+    candidate: []u8,
+    patch_text: []u8,
+
+    fn deinit(self: EnginePatch, allocator: std.mem.Allocator) void {
+        allocator.free(self.candidate);
+        allocator.free(self.patch_text);
+    }
+};
+
+fn engineGuardPatch(allocator: std.mem.Allocator, source: []const u8) !EnginePatch {
+    var collected = try propose.collectProposals(allocator, source, .typescript, .{});
+    defer propose.deinitCollectResult(allocator, &collected);
+
+    var composed = try proposal_mod.compose(allocator, source, collected.proposals, "guard_fixture.ts");
+    defer proposal_mod.deinitComposeResult(allocator, &composed);
+
+    return .{
+        .candidate = try allocator.dupe(u8, composed.candidate),
+        .patch_text = try allocator.dupe(u8, composed.patch),
+    };
+}
+
+test "apply without patch_kind aborts" {
+    const allocator = std.testing.allocator;
+    const tmp_path = ".test_patch_kind_required.ts";
+    try writeFile(tmp_path, GUARD_FIXTURE);
+    defer _ = std.c.unlink(tmp_path);
+
+    const result = try executeSafeRefactor(allocator, .{
+        .filepath = tmp_path,
+        .patch = .{ .patch_content = "--- a/x.ts\n+++ b/x.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n" },
+        .fix = true,
+    });
+    var res = result;
+    defer res.deinit(allocator);
+
+    try std.testing.expectEqual(RefactorStatus.aborted, res.status);
+    try std.testing.expect(res.error_msg != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.error_msg.?, "patch_kind required for patch applications") != null);
+
+    const read_back = try readFileAlloc(allocator, tmp_path);
+    defer allocator.free(read_back);
+    try std.testing.expectEqualStrings(GUARD_FIXTURE, read_back);
+}
+
+test "unknown patch_kind aborts" {
+    const allocator = std.testing.allocator;
+    const tmp_path = ".test_unknown_patch_kind.ts";
+    try writeFile(tmp_path, GUARD_FIXTURE);
+    defer _ = std.c.unlink(tmp_path);
+
+    const result = try executeSafeRefactor(allocator, .{
+        .filepath = tmp_path,
+        .patch = .{
+            .patch_content = "--- a/x.ts\n+++ b/x.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+            .patch_kind = "banana",
+        },
+        .fix = true,
+    });
+    var res = result;
+    defer res.deinit(allocator);
+
+    try std.testing.expectEqual(RefactorStatus.aborted, res.status);
+    try std.testing.expect(res.error_msg != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.error_msg.?, "unknown patch_kind") != null);
+
+    const read_back = try readFileAlloc(allocator, tmp_path);
+    defer allocator.free(read_back);
+    try std.testing.expectEqualStrings(GUARD_FIXTURE, read_back);
+}
+
+test "guard patch without test_cmd aborts untouched" {
+    const allocator = std.testing.allocator;
+    const tmp_path = ".test_guard_needs_tests.ts";
+    try writeFile(tmp_path, GUARD_FIXTURE);
+    defer _ = std.c.unlink(tmp_path);
+
+    const hash = try fileSha256(allocator, GUARD_FIXTURE);
+    defer allocator.free(hash);
+    const engine = try engineGuardPatch(allocator, GUARD_FIXTURE);
+    defer engine.deinit(allocator);
+
+    const result = try executeSafeRefactor(allocator, .{
+        .filepath = tmp_path,
+        .hash = .{ .expected_hash = hash },
+        .patch = .{ .patch_content = engine.patch_text, .patch_kind = "guard" },
+        .fix = true,
+    });
+    var res = result;
+    defer res.deinit(allocator);
+
+    try std.testing.expectEqual(RefactorStatus.aborted, res.status);
+    try std.testing.expect(res.error_msg != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.error_msg.?, "test_cmd required for guard/predicate patches") != null);
+
+    const read_back = try readFileAlloc(allocator, tmp_path);
+    defer allocator.free(read_back);
+    try std.testing.expectEqualStrings(GUARD_FIXTURE, read_back);
+}
+
+test "guard patch with passing test_cmd applies" {
+    const allocator = std.testing.allocator;
+    const tmp_path = ".test_guard_with_tests.ts";
+    try writeFile(tmp_path, GUARD_FIXTURE);
+    defer _ = std.c.unlink(tmp_path);
+
+    const hash = try fileSha256(allocator, GUARD_FIXTURE);
+    defer allocator.free(hash);
+    const engine = try engineGuardPatch(allocator, GUARD_FIXTURE);
+    defer engine.deinit(allocator);
+
+    const result = try executeSafeRefactor(allocator, .{
+        .filepath = tmp_path,
+        .hash = .{ .expected_hash = hash },
+        .test_run = .{ .test_cmd = "zig version" },
+        .patch = .{ .patch_content = engine.patch_text, .patch_kind = "guard" },
+        .fix = true,
+    });
+    var res = result;
+    defer res.deinit(allocator);
+
+    try std.testing.expectEqual(RefactorStatus.verified, res.status);
+    try std.testing.expectEqual(Classification.verified, res.classification.?);
+
+    const read_back = try readFileAlloc(allocator, tmp_path);
+    defer allocator.free(read_back);
+    try std.testing.expectEqualStrings(engine.candidate, read_back);
+}
+
+test "misclassified guard patch aborts" {
+    const allocator = std.testing.allocator;
+    const tmp_path = ".test_misclassified.ts";
+    try writeFile(tmp_path, GUARD_FIXTURE);
+    defer _ = std.c.unlink(tmp_path);
+
+    const hash = try fileSha256(allocator, GUARD_FIXTURE);
+    defer allocator.free(hash);
+    const engine = try engineGuardPatch(allocator, GUARD_FIXTURE);
+    defer engine.deinit(allocator);
+
+    const result = try executeSafeRefactor(allocator, .{
+        .filepath = tmp_path,
+        .hash = .{ .expected_hash = hash },
+        .test_run = .{ .test_cmd = "zig version" },
+        .patch = .{ .patch_content = engine.patch_text, .patch_kind = "constant" },
+        .fix = true,
+    });
+    var res = result;
+    defer res.deinit(allocator);
+
+    try std.testing.expectEqual(RefactorStatus.aborted, res.status);
+    try std.testing.expect(res.error_msg != null);
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        res.error_msg.?,
+        "classification mismatch: patch reproduces a guard proposal but declares constant",
+    ));
+
+    const read_back = try readFileAlloc(allocator, tmp_path);
+    defer allocator.free(read_back);
+    try std.testing.expectEqualStrings(GUARD_FIXTURE, read_back);
+}
+
+test "declared manual candidate applies without engine match" {
+    const allocator = std.testing.allocator;
+    const tmp_path = ".test_declared_manual.ts";
+    try writeFile(tmp_path, GUARD_FIXTURE);
+    defer _ = std.c.unlink(tmp_path);
+
+    const arbitrary = "function process(user: User): void {\n  sendEmail(user);\n}\n";
+    const result = try executeSafeRefactor(allocator, .{
+        .filepath = tmp_path,
+        .patch = .{ .candidate_content = arbitrary, .patch_kind = "manual" },
+        .fix = true,
+    });
+    var res = result;
+    defer res.deinit(allocator);
+
+    try std.testing.expectEqual(RefactorStatus.verified, res.status);
+    try std.testing.expectEqual(Classification.declared, res.classification.?);
+
+    const read_back = try readFileAlloc(allocator, tmp_path);
+    defer allocator.free(read_back);
+    try std.testing.expectEqualStrings(arbitrary, read_back);
+}
+
+test "dry-run previews without patch_kind" {
+    const allocator = std.testing.allocator;
+    const tmp_path = ".test_kindless_dry_run.ts";
+    try writeFile(tmp_path, GUARD_FIXTURE);
+    defer _ = std.c.unlink(tmp_path);
+
+    const engine = try engineGuardPatch(allocator, GUARD_FIXTURE);
+    defer engine.deinit(allocator);
+
+    const result = try executeSafeRefactor(allocator, .{
+        .filepath = tmp_path,
+        .patch = .{ .patch_content = engine.patch_text },
+        .fix = false,
+    });
+    var res = result;
+    defer res.deinit(allocator);
+
+    try std.testing.expectEqual(RefactorStatus.dry_run, res.status);
+    try std.testing.expect(res.diff.len > 0);
+    try std.testing.expect(res.classification == null);
+
+    const read_back = try readFileAlloc(allocator, tmp_path);
+    defer allocator.free(read_back);
+    try std.testing.expectEqualStrings(GUARD_FIXTURE, read_back);
+}
+
+test "hash mismatch aborts before classification" {
+    const allocator = std.testing.allocator;
+    const tmp_path = ".test_hash_before_classification.ts";
+    try writeFile(tmp_path, GUARD_FIXTURE);
+    defer _ = std.c.unlink(tmp_path);
+
+    const engine = try engineGuardPatch(allocator, GUARD_FIXTURE);
+    defer engine.deinit(allocator);
+
+    const result = try executeSafeRefactor(allocator, .{
+        .filepath = tmp_path,
+        .hash = .{ .expected_hash = "0000000000000000000000000000000000000000000000000000000000000000" },
+        .patch = .{ .patch_content = engine.patch_text, .patch_kind = "guard" },
+        .fix = true,
+    });
+    var res = result;
+    defer res.deinit(allocator);
+
+    try std.testing.expectEqual(RefactorStatus.aborted, res.status);
+    try std.testing.expect(res.error_msg != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.error_msg.?, "state lock failed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.error_msg.?, "test_cmd required") == null);
+}
+
 test "readFileAlloc on directory returns error.IsDirectory" {
     const allocator = std.testing.allocator;
     try std.testing.expectError(error.IsDirectory, readFileAlloc(allocator, "."));
