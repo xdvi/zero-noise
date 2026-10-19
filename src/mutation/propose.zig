@@ -322,17 +322,17 @@ test "every proposal carries the source hash" {
 }
 
 test "advisory capability adds a limitation entry" {
+    // Pairs that stay advisory across every P0 pass rollout.
     try std.testing.expectEqual(Capability.advisory, capabilityFor(.predicate, .go));
-    try std.testing.expectEqual(Capability.advisory, capabilityFor(.guard, .typescript));
-    try std.testing.expectEqual(Capability.advisory, capabilityFor(.constant, .go));
+    try std.testing.expectEqual(Capability.advisory, capabilityFor(.closure, .rust));
 
     const allocator = std.testing.allocator;
-    var result = try collectProposals(allocator, "const x = 1;\n", .typescript, .{});
+    var result = try collectProposals(allocator, "package main\n\nfunc f() {}\n", .go, .{});
     defer deinitCollectResult(allocator, &result);
 
     var found = false;
     for (result.limitations) |limitation| {
-        if (std.mem.indexOf(u8, limitation, "guard extraction not enabled for typescript (advisory)") != null) {
+        if (std.mem.indexOf(u8, limitation, "predicate extraction not enabled for go (advisory)") != null) {
             found = true;
         }
     }
