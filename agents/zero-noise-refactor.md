@@ -27,15 +27,16 @@ Clean code is READABLE code — not necessarily the shortest code.
 
 ## Available Tool Suite
 
-The agent has access to 7 specialized tools (invokable via native MCP tools or CLI commands via `zero-noise`):
+The agent has access to 8 specialized tools (invokable via native MCP tools or CLI commands via `zero-noise`):
 
 1. **`inspect_evidence`** (`zero-noise audit --format=compact`): Unified Evidence Contract crossing noise, cognitive complexity, and blast radius into a prioritized, state-locked Evidence Pack.
 2. **`audit_noise`** (`zero-noise audit`): Static structural linter checking nesting depth > 2, inline closures > 80 chars, raw boolean expressions, and commented-out code.
 3. **`refactor_helper`** (`zero-noise refactor --dry-run`): DRY detection for repeated string literals (frequency >= 3) and boolean algebraic simplifications.
 4. **`complexity`** (`zero-noise complexity`): SonarSource Cognitive Complexity calculation per function (default threshold: 15).
 5. **`blast_radius`** (`zero-noise blast`): Symbol definition, usage, and cross-file coupling analysis to assess refactor impact.
-6. **`safe_refactor`** (`zero-noise refactor`): Test-bracketed refactoring execution with state-lock hash verification and automatic atomic rollback.
-7. **`evaluate_rules`** (`zero-noise audit`): Declarative AST and regex anti-pattern rules from `.zero-noise-rules.json`.
+6. **`propose_fixes`** (`zero-noise plan`): Lists machine-applicable fix proposals (guard, predicate, constant, closure) with `expected_hash` state locks; `compose` merges non-overlapping proposals into one candidate (`--compose`, `--out`).
+7. **`safe_refactor`** (`zero-noise refactor`): Test-bracketed refactoring execution with state-lock hash verification, classification-verified `patch_kind` enforcement, required `test_cmd` for guard/predicate patches, and automatic atomic rollback.
+8. **`evaluate_rules`** (`zero-noise audit`): Declarative AST and regex anti-pattern rules from `.zero-noise-rules.json`.
 
 ## Mandate
 
@@ -50,18 +51,21 @@ The agent has access to 7 specialized tools (invokable via native MCP tools or C
    - Consult `skills/zero-noise-refactor/SKILL.md`, `reference/cleanliness_rules.md`, and `reference/architecture_patterns.md`.
 4. **Scoped Proposal (One Concern per Pass)**:
    - Cap each pass/diff/commit to a single structural concern (`evidence → proposal → safe_refactor`; never blind-fix).
+   - Materialize the pass as engine proposals (`propose_fixes` via MCP or `zero-noise plan <file> --compose`) and apply with an explicit `patch_kind`; resolve `naming_required` placeholders with the user before applying, and compose only non-overlapping proposals.
    - Extract named pure functions passed by reference. No anonymous closures > 2 lines or > 80 chars in argument position.
    - Apply Early Return to flatten nesting beyond 2 levels while preserving short-circuit guard order.
    - Replace compound booleans with domain predicates using the repo's **ubiquitous language**. If the domain name is ambiguous, propose candidates and wait for approval; never synonymize existing repo terms.
    - Before applying De Morgan or boolean reductions, verify all operands are pure and free of side-effects, mutations, I/O, or nil/bounds panics; isolate side-effects first if present.
    - Eliminate duplicated string literals (`>= 3`) into domain constants.
 5. **State-Locked Validation**:
-   - Run `safe_refactor` (`zero-noise refactor <file> --expected-hash="<sha256>" --test-cmd="<tests>" --fix`) with state-lock protection and atomic rollback.
+   - Run `safe_refactor` (`zero-noise refactor <file> --expected-hash="<sha256>" --test-cmd="<tests>" --patch-file=<patch> --patch-kind=<kind> --fix`) with state-lock protection and atomic rollback.
+   - Guard and predicate patches require `test_cmd`; the engine refuses them otherwise. Classification mismatches abort — the engine verifies the declared `patch_kind` against its own proposals when it can.
    - Re-run `audit_noise` (`zero-noise audit <path>`) to confirm score is `0` (exit code `0`), and re-run benchmarks on hot paths to confirm zero cost regression.
 
 6. **Never**:
    - Touch generated/vendored code, deliberate state machines, or unbenchmarked hot paths.
    - Run blind `--fix` without inspecting evidence and formulating a single-concern proposal first.
+   - Apply a patch without an explicit `patch_kind`, or apply guard/predicate patches without `test_cmd`.
    - Synonymize established repository domain terms or invent generic names (`helper`, `processData`, `utils`).
    - Apply De Morgan across side-effectful calls or short-circuit nil/bounds guards.
    - Leave dead code, commented-out blocks, or compat flags, or change external behavior.

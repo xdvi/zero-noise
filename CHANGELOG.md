@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Applicable-Fix Engine**: Byte-range edit engine with overlap detection — deterministic proposals rendered as unified diffs.
+- **Proposal Model**: Every proposal carries a SHA-256 `expected_hash` state lock; non-overlapping proposals compose greedily into one applicable candidate with explicit conflict reporting.
+- **AST Rewrite Passes**: Guard extraction (early return), repeated-literal constants, compound-boolean predicates, and long-closure extraction, with a per-language capability matrix — guards and constants on Go, Rust, Zig, TypeScript/TSX, Python, and C#; predicates and closures on TypeScript/TSX and Python (advisory elsewhere).
+- **`propose_fixes` MCP Tool**: Paged fix proposals with optional per-proposal patches (`include_patches`) and composed candidates (`compose`).
+- **`plan` CLI Command**: `zero-noise plan <path>` with `--include-patches`, `--compose`/`--out` composition, and `--kinds`, `--page`, `--page-size`, `--root` filters.
+- **Classification-Verified Apply Contract**: Applications must declare an explicit `patch_kind` (`guard|predicate|constant|closure|boolean|manual`); the engine verifies it against its own proposals and aborts on mismatch. Guard and predicate patches are rejected without `test_cmd`. Dry-run remains the default (`fix=true` / `--fix` opt-in).
+
 ## [0.1.0] - 2026-10-17
 
 ### Added

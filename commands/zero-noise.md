@@ -12,7 +12,7 @@ Audits and refactors target files or directories to eliminate structural debt, d
 
 ## Tool Suite Overview
 
-The refactor suite provides 7 tools available as native MCP tools or native CLI commands:
+The refactor suite provides 8 tools available as native MCP tools or native CLI commands:
 
 | Tool | CLI Command | Description |
 |------|-------------|-------------|
@@ -22,6 +22,7 @@ The refactor suite provides 7 tools available as native MCP tools or native CLI 
 | `complexity` | `zero-noise complexity` | SonarSource Cognitive Complexity per function (threshold default: 15) |
 | `blast_radius` | `zero-noise blast` | Symbol usages, definitions, and cross-module blast radius |
 | `safe_refactor` | `zero-noise refactor` | Test-bracketed refactoring with state-lock hash verification and atomic rollback |
+| `propose_fixes` | `zero-noise plan` | Paged fix proposals (guard, predicate, constant, closure) with `expected_hash` state locks, optional per-proposal patches, and composed candidates (`--compose`, `--out`) |
 | `evaluate_rules` | `zero-noise mcp` | Available via MCP (`zero-noise mcp`) to evaluate declarative rules from `.zero-noise-rules.json` |
 
 ## When NOT to Use
@@ -63,10 +64,12 @@ Skip refactoring on:
    - Extract inline closures (`>2` lines or `>80` chars) to **pure named functions** passed by reference.
    - Replace compound conditions (`a && (b || c)`) with **domain predicates** preserving the repository's **ubiquitous language** (never synonymize existing repo terms; propose and wait for approval if domain naming is ambiguous).
    - Verify operands are pure and panic-free before applying **De Morgan**; if side-effects or panic guards exist, isolate them first or skip.
+   - Turn the scoped concern into engine proposals before editing: `propose_fixes(path=<target>)` via MCP, or `zero-noise plan <target-path> --compose` in the CLI. Each proposal carries an `expected_hash` state lock; names marked `naming_required` are placeholders — propose real domain names to the user before applying.
 
 5. **Step 4: State-Locked Safe Delivery & Verification:**
    - Execute the proposed pass with state-lock verification, test bracketing, and automatic atomic rollback:
      ```bash
-     zero-noise refactor <target-path> --expected-hash="<sha256>" --test-cmd="<project-test-cmd>" --fix
+     zero-noise refactor <target-path> --expected-hash="<sha256>" --test-cmd="<project-test-cmd>" --patch-file=<patch> --patch-kind=<kind> --fix
      ```
+   - Every patch application declares an explicit `patch_kind` (`guard|predicate|constant|closure|boolean|manual`); the engine verifies it against its own proposals and aborts on classification mismatch. Guard and predicate patches require `test_cmd` — the engine refuses them otherwise. Dry-run remains the default; `--fix` is the explicit apply opt-in.
    - Re-run `zero-noise audit <target-path>` (noise score must reach `0`, exit code `0`) and re-run benchmarks on hot paths to confirm zero cost regression.

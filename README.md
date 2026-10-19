@@ -10,6 +10,7 @@ A universal plugin for **Claude Code**, **Antigravity (agy)**, **OpenCode**, and
 
 - **Audits** structural noise: deep nesting (>2 levels), anonymous closures in argument position, raw conditionals, duplicated literals, and commented-out dead code.
 - **Auto-fixes** algebraic simplifications with `--fix` (De Morgan's laws, `endsWith` shortcuts, and boolean return cleanups).
+- **Proposes** machine-applicable fixes via `plan` / `propose_fixes` — guard, predicate, constant, and closure rewrites, each locked to the source SHA-256 (`expected_hash`) and composable into a single patch.
 - **Validates** that the noise score is strictly lower after the refactor with compiled native Zig engine with zero external runtime dependencies.
 
 ---
@@ -215,15 +216,51 @@ zero-noise blast <symbol> --root=.
 
 ### `zero-noise refactor`
 
-Guaranteed safe test-bracketed refactoring runner with automatic rollback on test failure:
+Guaranteed safe test-bracketed refactoring runner with automatic rollback on test failure. Dry-run is the default; applying requires explicit `--fix`:
 
 ```bash
-# Dry run
+# Dry run (default)
 zero-noise refactor <file>
 
 # Apply algebraic simplifications and verify with test suite
 zero-noise refactor <file> --test-cmd="npm test" --fix
+
+# Apply a patch from `plan` / `propose_fixes`
+zero-noise refactor <file> --patch-file=fix.patch --patch-kind=guard --expected-hash=<sha256> --test-cmd="npm test" --fix
 ```
+
+Apply contract:
+
+- Applications supplying `candidate_content`, `patch_content`, or `patch_file` must declare an explicit `patch_kind` (`guard`, `predicate`, `constant`, `closure`, `boolean`, or `manual`); the engine aborts without one.
+- The engine verifies the declared kind against its own proposals when the patch reproduces one (or a composition), aborting on `classification mismatch`; free-form patches keep the declared kind.
+- `guard` and `predicate` patches require `test_cmd` — the engine refuses them otherwise.
+- `expected_hash` is the SHA-256 captured at proposal time; any file change aborts with `state lock failed`.
+
+### `zero-noise plan`
+
+Lists machine-applicable fix proposals (guard, predicate, constant, closure) for a file or directory — the same report the `propose_fixes` MCP tool returns. Every proposal carries an `expected_hash` state lock; proposals never fail the command (exit `0` with findings, `1` on errors):
+
+```bash
+# Text output
+zero-noise plan <path>
+
+# Structured JSON output
+zero-noise plan <path> --format=json
+
+# Include the unified diff for each proposal
+zero-noise plan <path> --include-patches
+
+# Compose non-overlapping proposals into one applicable patch
+zero-noise plan <path> --compose
+
+# Write the composed patch to a file (summary line still printed)
+zero-noise plan <path> --compose --out=fix.patch
+
+# Restrict kinds, paginate, or scope the walk
+zero-noise plan <path> --kinds=guard,constant --page=1 --page-size=10 --root=.
+```
+
+Composition is greedy and deterministic: non-overlapping proposals merge into one candidate, overlapping ones are reported as conflicts (`composed: applied=2 conflicts=1`). Proposals flagged `naming_required` carry placeholder names (e.g. `isUserReady`, `extractedClosure1`) — propose real domain names to the user before applying.
 
 ### Git Pre-Commit Hook
 

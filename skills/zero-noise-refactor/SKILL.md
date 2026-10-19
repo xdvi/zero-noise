@@ -24,7 +24,8 @@ Use this skill when:
 ## Hard Rules
 
 - **Zero Behavior Change**: Preserve exact external behavior, signatures, error types, and API contracts.
-- **Evidence → Proposal → `safe_refactor` (No Blind-Fix)**: Never run `--fix` blindly. Inspect evidence, preview diff (`refactor_helper` / `--dry-run`), propose the scoped change, then execute `safe_refactor` with `expected_hash` and `test_cmd`.
+- **Evidence → Proposal → `safe_refactor` (No Blind-Fix)**: Never run `--fix` blindly. Inspect evidence, list engine proposals (`propose_fixes` / `zero-noise plan`), preview the diff, propose the scoped change, then execute `safe_refactor` with `expected_hash` and an explicit `patch_kind`.
+- **Proposal Flow**: Compose non-overlapping proposals into one candidate before applying. Guard and predicate patches require `test_cmd`; the engine refuses them otherwise. Names marked `naming_required` are placeholders — propose real domain names to the user before applying. Applications must declare `patch_kind`; the engine verifies it against its own proposals when it can and aborts on classification mismatch.
 - **One Concern per Pass**: Cap each pass/diff/commit to a single structural concern (e.g., pass 1: guard clauses; pass 2: predicate/closure extraction; pass 3: DRY constants). Keep diffs small and reviewable.
 - **Inlining Ban**: Never keep anonymous closures in argument position (the automated engine flags closures exceeding 80 characters via `config.max_closure_len`). Extract pure named functions passed by reference.
 - **Absolute Early Return**: Invert conditions and return early. Maximum nesting depth is 2 levels.
@@ -46,8 +47,10 @@ Use this skill when:
 | Target is a hot path and repo has benchmarks | Run baseline benchmark before edit and compare after `safe_refactor` | Project benchmark runner |
 | Deep nesting (>2) or long inline closures | Audit structural noise & check pass/fail score | `audit_noise` (CLI / MCP) |
 | Duplicated literals or pure boolean algebra | Analyze DRY extraction candidates & preview algebraic reductions | `refactor_helper` (CLI / MCP) |
+| Findings → applicable patch | List engine proposals with state-lock hashes; compose non-overlapping candidates into one patch | `propose_fixes` / `zero-noise plan` (CLI / MCP) |
+| Proposed name is `naming_required` | Placeholder name; propose real domain names to the user before applying | User confirmation |
 | High cognitive complexity | Calculate SonarSource Cognitive Complexity per function | `complexity` (CLI / MCP) |
-| Applying a reviewed single-concern pass | Run test-bracketed refactor with state-lock hash & atomic rollback | `safe_refactor` (CLI / MCP) |
+| Applying a reviewed single-concern pass | Run test-bracketed refactor with state-lock hash, explicit `patch_kind`, and atomic rollback (`test_cmd` mandatory for guard/predicate patches) | `safe_refactor` (CLI / MCP) |
 | Custom codebase architectural constraints | Check declarative AST/regex anti-pattern rules | `evaluate_rules` (CLI / MCP) |
 
 ## Execution Steps
@@ -56,8 +59,8 @@ Use this skill when:
 
 Execute via native MCP tools (`zero-noise mcp`) when available, or CLI commands via the native `zero-noise` binary:
 
-- **MCP Tools**: `inspect_evidence`, `audit_noise`, `complexity`, `blast_radius`, `refactor_helper`, `safe_refactor`, `evaluate_rules`
-- **Native CLI**: `zero-noise audit`, `zero-noise complexity`, `zero-noise blast`, `zero-noise refactor`
+- **MCP Tools**: `inspect_evidence`, `audit_noise`, `complexity`, `blast_radius`, `refactor_helper`, `propose_fixes`, `safe_refactor`, `evaluate_rules`
+- **Native CLI**: `zero-noise audit`, `zero-noise complexity`, `zero-noise blast`, `zero-noise plan`, `zero-noise refactor`
 
 ### 1. Gate Check & Evidence Inspection
 1. Confirm the target is not generated/vendored, a deliberate state machine, or an unbenchmarked hot path.
@@ -77,12 +80,18 @@ Execute via native MCP tools (`zero-noise mcp`) when available, or CLI commands 
    - **Predicates / Closures**: extract closures (`>2` lines or `>80` chars) and compound booleans into pure functions using the repo's exact domain terms (ask user if naming is ambiguous).
    - **Boolean Algebra**: apply De Morgan only after confirming all operands are pure and panic-free.
    - **DRY Constants**: centralize literals repeated `>= 3` times.
+5. Materialize the pass as engine proposals and review them:
+   - MCP: `propose_fixes(path=target, kinds="guard", include_patches=true)` returns proposals with `expected_hash`, plus a composed candidate when `compose=true`.
+   - CLI: `zero-noise plan <target> --compose` (add `--include-patches` for per-proposal diffs).
+   - Proposals with `naming_required=true` carry placeholder names — propose real domain names to the user and wait for approval before applying.
+   - Compose non-overlapping proposals into a single candidate; overlapping proposals are reported as conflicts and must be applied in separate passes.
 
 ### 4. State-Locked Safe Delivery & Verification
-5. Execute the approved pass through `safe_refactor` with state-lock hash and test command:
-   - MCP: `safe_refactor(filepath=target, expected_hash="...", test_cmd="...", candidate_content="...")`
-   - CLI: `zero-noise refactor <target> --expected-hash="<hash>" --test-cmd="<test-cmd>" --fix`
-6. Re-run `audit_noise` (`zero-noise audit <target>`) and `complexity` to confirm noise score is `0` and complexity decreased. On hot paths, re-run benchmarks to confirm zero regression.
+6. Execute the approved pass through `safe_refactor` with state-lock hash, explicit `patch_kind`, and test command:
+   - MCP: `safe_refactor(filepath=target, expected_hash="...", test_cmd="...", patch_content="...", patch_kind="guard")`
+   - CLI: `zero-noise refactor <target> --expected-hash="<hash>" --test-cmd="<test-cmd>" --patch-file=<patch> --patch-kind=<kind> --fix`
+   - The engine verifies `patch_kind` against its own proposals and aborts on classification mismatch. Guard and predicate patches require `test_cmd` — without it the engine refuses to touch the file.
+7. Re-run `audit_noise` (`zero-noise audit <target>`) and `complexity` to confirm noise score is `0` and complexity decreased. On hot paths, re-run benchmarks to confirm zero regression.
 
 ## Output Contract
 
