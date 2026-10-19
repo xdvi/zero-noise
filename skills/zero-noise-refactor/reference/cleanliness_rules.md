@@ -67,8 +67,10 @@ def process_order(order):
     return dispatch(order)
 ```
 
-## 3. Algebraic and Boolean Simplification
+## 3. Algebraic and Boolean Simplification (Short-Circuit Safe)
 
-- Eliminate logical redundancies (e.g., `x === '/path' || x.endsWith('/path')` reduces to `x.endsWith('/path')`).
+- **Verify Purity & Guard Order First**: Before applying De Morgan's laws or inverting conditions, confirm operands contain no side-effects, state mutations, I/O, or nil/bounds guards dependent on short-circuit evaluation order (`ptr != nil && ptr.isValid()`, `i < len && arr[i] == target`).
+- If an expression contains side-effects or panic guards, either preserve the exact short-circuit guard order or isolate side-effectful calls into separate statements before simplifying.
+- Eliminate logical redundancies on pure expressions (`x === '/path' || x.endsWith('/path')` reduces to `x.endsWith('/path')`).
 - Avoid redundant explicit boolean returns (`if (cond) return true; else return false;` reduces to `return Boolean(cond);`).
-- Apply De Morgan's laws to simplify multiple chained negations (`!(!a || !b)` becomes `a && b`).
+- Apply De Morgan's laws to simplify chained negations on pure terms (`!(!a || !b)` becomes `a && b`).

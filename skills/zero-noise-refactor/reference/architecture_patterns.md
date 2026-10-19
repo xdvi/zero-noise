@@ -2,10 +2,12 @@
 
 Architectural guide to structure expressive code, free of duplication and decoupled from infrastructure details.
 
-## 1. Domain Semantics in Predicates
+## 1. Domain Semantics & Ubiquitous Language in Predicates
 
-- Never expose raw compound boolean expressions in business logic (e.g., `if (a && !b && !c)`).
-- Encapsulate them into descriptive functions that reveal domain intent (e.g., `if (isEligibleForExpressCheckout(cart))`).
+- Never expose raw compound boolean expressions in business logic (`if (a && !b && !c)`).
+- Encapsulate them into descriptive functions that preserve the repository's **ubiquitous language** (`if (isEligibleForExpressCheckout(cart, user))`).
+- **Never Synonymize Repo Vocabulary**: Reuse exact domain nouns and verbs already established in the codebase (do not invent `Shipping` when the module uses `Checkout`).
+- **Propose When Ambiguous**: If the domain concept behind a compound condition is unclear or spans multiple concepts, propose candidate predicate names to the user and wait for approval before applying.
 
 ### Example
 
@@ -13,21 +15,21 @@ Before:
 
 ```typescript
 if (cart.total > 100 && user.isVerified && !cart.hasRestrictedItems && user.country === 'CO') {
-  enableExpressShipping(cart);
+  enableExpressCheckout(cart);
 }
 ```
 
 After:
 
 ```typescript
-function isEligibleForExpressShipping(cart: Cart, user: User): boolean {
+function isEligibleForExpressCheckout(cart: Cart, user: User): boolean {
   const meetsMinimumOrder = cart.total > 100 && !cart.hasRestrictedItems;
   const isVerifiedDomesticUser = user.isVerified && user.country === 'CO';
   return meetsMinimumOrder && isVerifiedDomesticUser;
 }
 
-if (isEligibleForExpressShipping(cart, user)) {
-  enableExpressShipping(cart);
+if (isEligibleForExpressCheckout(cart, user)) {
+  enableExpressCheckout(cart);
 }
 ```
 

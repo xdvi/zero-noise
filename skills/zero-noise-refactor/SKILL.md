@@ -15,14 +15,23 @@ Use this skill when:
 - Refactoring legacy code into clean, agnostic, maintainable implementations without altering external behavior.
 - Cognitive complexity exceeds threshold or cross-module coupling requires blast radius assessment.
 
+### When NOT to Use
+- **Generated or Vendored Code**: Never touch codegen outputs (`*.pb.go`, `*.g.dart`, `dist/`), `vendor/`, or `node_modules/`.
+- **Deliberate State Machines / Parsers**: Do not flatten state transitions, lexers, or protocol switches where nested branching models explicit state tables.
+- **Unmeasured Hot Paths**: Do not extract closures or predicates in tight loops/hot paths when no benchmark or profiler gate exists to verify zero cost regression.
+- **Unvalidated Public APIs**: Never alter exported signatures or shared contracts before running `blast_radius` across all callers.
+
 ## Hard Rules
 
-- **Zero Behavior Change**: Preserve exact external behavior, signatures, and API contracts.
+- **Zero Behavior Change**: Preserve exact external behavior, signatures, error types, and API contracts.
+- **Evidence → Proposal → `safe_refactor` (No Blind-Fix)**: Never run `--fix` blindly. Inspect evidence, preview diff (`refactor_helper` / `--dry-run`), propose the scoped change, then execute `safe_refactor` with `expected_hash` and `test_cmd`.
+- **One Concern per Pass**: Cap each pass/diff/commit to a single structural concern (e.g., pass 1: guard clauses; pass 2: predicate/closure extraction; pass 3: DRY constants). Keep diffs small and reviewable.
 - **Inlining Ban**: Never keep anonymous closures >2 lines or >80 characters in argument position. Extract pure named functions passed by reference.
 - **Absolute Early Return**: Invert conditions and return early. Maximum nesting depth is 2 levels.
-- **Explicit Domain Predicates**: Replace compound boolean conditions (`a && (b || c)`) with domain-named functions (e.g. `isEligibleForExpressCheckout(cart)`).
+- **Ubiquitous Language in Predicates**: Replace compound boolean conditions (`a && (b || c)`) with domain-named predicates that reuse the repository's existing vocabulary. Never synonymize established repo terms; if domain naming is ambiguous, propose candidates and wait for user approval.
+- **Short-Circuit & Side-Effect Safety**: Before applying De Morgan's laws or inverting conditions, verify operands have no side-effects, mutations, I/O, or panic/nil/bounds guards dependent on evaluation order. If present, isolate side-effects into prior statements or skip algebraic rewrite.
+- **Hot-Path Benchmark Gate**: If the target is a hot path and the repo has benchmarks, measure before and after refactoring (tests verify semantics; benchmarks verify cost).
 - **Single Source of Truth (DRY)**: Extract repeated string literals (frequency >= 3) into centralized domain constants.
-- **Algebraic Simplification**: Apply De Morgan's laws and eliminate redundant boolean checks/comparisons.
 - **Clean Break & Zero Legacy**: Delete dead code, commented-out blocks, and temporary flags. Never use generic names (`helper`, `processData`, `utils`).
 
 ## Decision Gates
@@ -30,11 +39,15 @@ Use this skill when:
 | Situation | Action | Tool |
 | --- | --- | --- |
 | Cold-start or prioritization | Inspect unified Evidence Contract (noise + complexity + blast radius + hash) | `inspect_evidence` (CLI / MCP) |
+| Generated/vendored file or deliberate state machine | Abort refactor; leave file untouched | None (Skip) |
+| Modifying public or shared symbols | Measure usage count, definitions, and coupling blast radius before any edit | `blast_radius` (CLI / MCP) |
+| Ambiguous domain concept for new predicate | Propose predicate name(s) aligned with repo vocabulary; wait for approval | User confirmation |
+| Condition contains side-effects, I/O, or nil/bounds guard | Isolate side-effect first or preserve short-circuit guard order; do not blind-apply De Morgan | Manual AST inspection |
+| Target is a hot path and repo has benchmarks | Run baseline benchmark before edit and compare after `safe_refactor` | Project benchmark runner |
 | Deep nesting (>2) or long inline closures | Audit structural noise & check pass/fail score | `audit_noise` (CLI / MCP) |
-| Duplicated literals or compound boolean logic | Analyze DRY extraction candidates & algebraic reductions | `refactor_helper` (CLI / MCP) |
-| High cognitive or cyclomatic complexity | Calculate SonarSource Cognitive Complexity per function | `complexity` (CLI / MCP) |
-| Modifying public or shared symbols | Measure usage count, definitions, and coupling blast radius | `blast_radius` (CLI / MCP) |
-| Refactoring with automated verification | Run test-bracketed refactor with state-lock hash & atomic rollback | `safe_refactor` (CLI / MCP) |
+| Duplicated literals or pure boolean algebra | Analyze DRY extraction candidates & preview algebraic reductions | `refactor_helper` (CLI / MCP) |
+| High cognitive complexity | Calculate SonarSource Cognitive Complexity per function | `complexity` (CLI / MCP) |
+| Applying a reviewed single-concern pass | Run test-bracketed refactor with state-lock hash & atomic rollback | `safe_refactor` (CLI / MCP) |
 | Custom codebase architectural constraints | Check declarative AST/regex anti-pattern rules | `evaluate_rules` (CLI / MCP) |
 
 ## Execution Steps
@@ -43,46 +56,80 @@ Use this skill when:
 
 Execute via native MCP tools (`zero-noise mcp`) when available, or CLI commands via the native `zero-noise` binary:
 
-- **MCP Tools**: `inspect_evidence`, `audit_noise`, `complexity`, `blast_radius`, `safe_refactor`, `refactor_helper`, `evaluate_rules`
+- **MCP Tools**: `inspect_evidence`, `audit_noise`, `complexity`, `blast_radius`, `refactor_helper`, `safe_refactor`, `evaluate_rules`
 - **Native CLI**: `zero-noise audit`, `zero-noise complexity`, `zero-noise blast`, `zero-noise refactor`
 
-### 1. Evidence Inspection & Prioritization
-1. `inspect_evidence`: generate a prioritized Evidence Pack sorted by `priority_score` (High Complexity + High Noise + Low Blast Radius = safe quick wins first).
+### 1. Gate Check & Evidence Inspection
+1. Confirm the target is not generated/vendored, a deliberate state machine, or an unbenchmarked hot path.
+2. Generate the Evidence Pack and capture `state_lock_sha256` (`expected_hash`):
    - MCP: `inspect_evidence(path=target, page=1, page_size=10)`
-   - CLI: `zero-noise audit <target> --format=compact`
-   - Store `file_hash` as the state lock token for safe delivery.
+   - CLI: `zero-noise audit <target> --format=compact` and `zero-noise complexity <target> --threshold=15`
 
-### 2. Coupling & Safety Validation
-2. Evaluate safety condition:
-   - `safe_quick_win`: internal/leaf functions with low blast radius; eligible for automated or direct refactor.
-   - `requires_signature_validation`: exported symbols or high blast radius; require explicit caller verification before signature changes (`zero-noise blast <symbol>`).
+### 2. Blast Radius & Candidate Analysis
+3. Check coupling and preview reductions before editing:
+   - Exported/shared symbols: run `blast_radius(symbol=...)` / `zero-noise blast <symbol> --root=.` to verify callers.
+   - DRY & boolean candidates: run `refactor_helper(filepath=target)` / `zero-noise refactor <target> --dry-run`.
+   - If target is a hot path with repo benchmarks, record baseline benchmark metrics now.
 
-### 3. Spatial Zero-Noise Refactoring
-3. Analyze DRY candidates and algebraic reductions isolated strictly within AST node ranges.
-   - CLI: `zero-noise refactor <target> --dry-run`
-- Invert conditions and apply **Early Return** guards (nesting <= 2).
-- Extract argument closures into **pure named functions** passed by reference.
-- Name compound boolean expressions with **domain semantic predicates**.
-- Centralize repeated literals into **domain constants**.
+### 3. Scoped Proposal (One Concern per Pass)
+4. Formulate a single-concern refactor pass:
+   - **Guards**: flatten nesting (`<= 2`) with early returns, preserving nil/bounds short-circuit order.
+   - **Predicates / Closures**: extract closures (`>2` lines or `>80` chars) and compound booleans into pure functions using the repo's exact domain terms (ask user if naming is ambiguous).
+   - **Boolean Algebra**: apply De Morgan only after confirming all operands are pure and panic-free.
+   - **DRY Constants**: centralize literals repeated `>= 3` times.
 
-### 4. State-Locked Safe Delivery & Rollback Protection
-4. `safe_refactor`: execute refactoring locked by `expected_hash` and bracketed by tests, complexity gatekeeper, and automatic atomic rollback.
-   - MCP: `safe_refactor(filepath=target, expected_hash="...", test_cmd="...")`
-   - CLI: `zero-noise refactor <target> --test-cmd "<test-command>" --fix`
-- Re-run `zero-noise audit <target>` to confirm structural noise is 0.
-
+### 4. State-Locked Safe Delivery & Verification
+5. Execute the approved pass through `safe_refactor` with state-lock hash and test command:
+   - MCP: `safe_refactor(filepath=target, expected_hash="...", test_cmd="...", candidate_content="...")`
+   - CLI: `zero-noise refactor <target> --expected-hash="<hash>" --test-cmd="<test-cmd>" --fix`
+6. Re-run `audit_noise` (`zero-noise audit <target>`) and `complexity` to confirm noise score is `0` and complexity decreased. On hot paths, re-run benchmarks to confirm zero regression.
 
 ## Output Contract
 
 Return:
-- **Files Refactored**: target paths and scope.
-- **Structural Transformations**: count of guards applied, closures extracted, predicates named, and constants created.
-- **Verification Metrics**: noise score (must be 0), cognitive complexity delta, and test suite execution result.
-- **Safety Status**: verification of atomic test pass or rollback details if failure occurred.
+- **Files & Scope Pass**: target path, concern addressed in this pass, and `expected_hash` used.
+- **Structural Transformations**: guards applied, closures extracted, domain predicates named, or constants centralized.
+- **Verification Metrics**: noise score (must be `0`), cognitive complexity delta, `test_cmd` status, and benchmark delta (when on a hot path).
+- **Safety Status**: confirmation of state-locked test pass or atomic rollback details.
+
+## Examples
+
+### GOOD: Guard Clauses + Ubiquitous Language Predicate (Single Pass)
+```ts
+// Before: deep nesting + raw compound condition; repo uses "Order" and "Fulfillment"
+function dispatchOrder(order: Order | null, warehouse: Warehouse): Receipt | null {
+  if (order !== null) {
+    if (order.isPaid && order.items.length > 0 && warehouse.hasStock(order.id)) {
+      return warehouse.fulfill(order);
+    }
+  }
+  return null;
+}
+
+// After: early return + predicate preserving repo's "Order"/"Fulfillment" vocabulary
+function isReadyForFulfillment(order: Order, warehouse: Warehouse): boolean {
+  return order.isPaid && order.items.length > 0 && warehouse.hasStock(order.id);
+}
+
+function dispatchOrder(order: Order | null, warehouse: Warehouse): Receipt | null {
+  if (order === null || !isReadyForFulfillment(order, warehouse)) return null;
+  return warehouse.fulfill(order);
+}
+```
+
+### BAD: Mechanical Over-Extraction, Synonymization & Broken Short-Circuit
+```ts
+// Anti-example — DO NOT DO THIS:
+// 1. Reorders/applies De Morgan across nil guard & side-effectful consumeQuota()
+// 2. Invents synonym "Shipment" instead of repo's "Fulfillment" + generic "Helper" name
+function checkShipmentHelper(o: Order | null, w: Warehouse): boolean {
+  return !(!w.consumeQuota() || o === null || !o.isPaid); // BUG: mutates quota even when o is null!
+}
+```
 
 ## References
 
-- `reference/cleanliness_rules.md` — Mandatory standards for inline closures, guard clauses, and boolean logic.
-- `reference/architecture_patterns.md` — Domain semantic predicates, DRY constants, and clean break.
+- `reference/cleanliness_rules.md` — Mandatory standards for inline closures, guard clauses, and side-effect-safe boolean logic.
+- `reference/architecture_patterns.md` — Ubiquitous language predicates, DRY constants, and clean break.
 - `.zero-noise-rules.json` — Declarative custom anti-pattern rules.
 - `.zero-noise.json` — Custom thresholds and directory ignore patterns.
