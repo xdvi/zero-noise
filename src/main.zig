@@ -51,7 +51,7 @@ pub fn main(init: std.process.Init) !u8 {
     const command = args[1];
 
     if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
-        const ver_str = "zero-noise " ++ zn.mcp.protocol.SERVER_VERSION ++ " (no-sqlite)\n";
+        const ver_str = "zero-noise " ++ zn.mcp.protocol.SERVER_VERSION ++ " (in-memory state)\n";
         try stdout.writeStreamingAll(io, ver_str);
         return 0;
     }

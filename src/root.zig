@@ -61,10 +61,6 @@ pub const cli = struct {
     pub const plan = @import("cli/plan.zig");
 };
 
-pub fn getSqliteVersion() [*:0]const u8 {
-    return "no-sqlite";
-}
-
 test {
     _ = @import("treesitter/bindings.zig");
     _ = @import("treesitter/grammars.zig");

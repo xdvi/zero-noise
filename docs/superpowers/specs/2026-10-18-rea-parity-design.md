@@ -112,12 +112,11 @@ Inherited from `COLLABORATION.md` and the existing engine spec:
   there is no repo aggregate, ranking, baseline, or trend.
 - Defaults disagree: `safe_refactor` defaults `fix=true` over MCP, while the CLI
   defaults to dry-run. `--fix` can apply rewrites without a test command.
-- Persistence is a stub: `storage/db.zig` is in-memory maps, `getSqliteVersion()`
-  returns `"no-sqlite"`, the version string is hardcoded `(no-sqlite)`, and
-  `c/sqlite3.c` is not compiled. The ledger does not survive process exit. The
-  tracked `bin/zero-noise` is stale and reports SQLite 3.46.0. (At spec time,
-  README/CHANGELOG/spec described SQLite WAL storage; README and CHANGELOG were
-  aligned on 2026-10-19 and the engine spec is marked superseded.)
+- Persistence is a stub: `storage/db.zig` is in-memory maps and the ledger does not
+  survive process exit. The tracked `bin/zero-noise` was stale (SQLite 3.46.0) at
+  spec time; on 2026-10-19 the vendored SQLite sources were removed, the version
+  string reports `(in-memory state)`, the bundled binary was rebuilt from source, and
+  README, CHANGELOG, and the engine spec were aligned (the latter marked superseded).
 - Tests: roughly 102 Zig test blocks; the bench harness measures speed, not quality.
 
 ## 5. Approved direction and cuts
@@ -291,8 +290,8 @@ previous clean break (`f462d18`) deliberately removed.
    (append-only JSONL ledger plus JSON snapshots), written with the same atomic
    rename and SHA-256 state-lock discipline the engine already applies to source
    files. Concurrency safety comes from atomic writes and an advisory lock file, not
-   from an embedded database engine. The vendored `c/sqlite3.c` is removed from the
-   tree.
+   from an embedded database engine (the vendored `c/sqlite3.c` and `sqlite3.h` were
+   already removed on 2026-10-19).
 2. **Record shapes:** refactor ledger entries and run history records (timestamp,
    version, root, totals), versioned with a schema field so future fields are
    additive. File-cache and symbol-index records ship with the incremental phase
@@ -300,10 +299,10 @@ previous clean break (`f462d18`) deliberately removed.
 3. **Surfaces:** `zero-noise status` (backend, indexed files, last run) and
    `zero-noise log` (ledger entries and outcomes); `repo_report` includes a history
    summary.
-4. **Artifact truth:** replace the hardcoded `(no-sqlite)` string with the real
-   backend name, refresh or delete the stale tracked `bin/zero-noise`, and align
-   README, CHANGELOG, and the 2026-10-16 engine spec with the file-based build (its
-   SQLite section is superseded).
+4. **Artifact truth (largely completed on 2026-10-19):** the version string reports
+   the in-memory backend, the bundled `bin/zero-noise` is rebuilt from source, the
+   vendored SQLite sources are gone, and README, CHANGELOG, and the engine spec are
+   aligned. Remaining: report the file-based backend once persistence ships.
 
 **Acceptance:**
 

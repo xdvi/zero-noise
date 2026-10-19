@@ -184,7 +184,3 @@ pub fn bootstrap(allocator: std.mem.Allocator, io: std.Io, root_path: []const u8
     var db = try Database.open(allocator, paths.db_path.ptr);
     db.close();
 }
-
-pub fn getSqliteVersion() [*:0]const u8 {
-    return "no-sqlite";
-}
