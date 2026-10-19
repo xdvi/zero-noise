@@ -73,6 +73,17 @@ const python_syntax = GuardSyntax{
     .invert_prefix = "not ",
 };
 
+/// C# `method_declaration` and `local_function_statement` both keep their body
+/// in `consequence`-style blocks; return types live under `returns`/`type`.
+const c_sharp_syntax = GuardSyntax{
+    .if_nodes = &.{"if_statement"},
+    .condition_field = "condition",
+    .body_field = "consequence",
+    .else_field = "alternative",
+    .early_return = "{ return; }",
+    .invert_prefix = "!",
+};
+
 fn syntaxFor(lang: grammars.Language) ?*const GuardSyntax {
     return switch (lang) {
         .typescript, .tsx => &typescript_syntax,
@@ -80,12 +91,13 @@ fn syntaxFor(lang: grammars.Language) ?*const GuardSyntax {
         .zig => &zig_syntax,
         .rust => &rust_syntax,
         .python => &python_syntax,
+        .c_sharp => &c_sharp_syntax,
         else => null,
     };
 }
 
 pub fn supportedLanguages() []const grammars.Language {
-    return &.{ .typescript, .tsx, .go, .zig, .rust, .python };
+    return &.{ .typescript, .tsx, .go, .zig, .rust, .python, .c_sharp };
 }
 
 pub fn collect(
@@ -345,8 +357,16 @@ fn isVoidCapable(lang: grammars.Language, source: []const u8, boundary: bindings
         .rust => boundary.childByFieldName("return_type").isNull(),
         // An early `return` is valid in every Python function.
         .python => true,
+        .c_sharp => cSharpVoidCapable(source, boundary),
         else => false,
     };
+}
+
+fn cSharpVoidCapable(source: []const u8, boundary: bindings.TSNode) bool {
+    const returns = boundary.childByFieldName("returns");
+    const return_type = if (returns.isNull()) boundary.childByFieldName("type") else returns;
+    if (return_type.isNull()) return false;
+    return std.mem.eql(u8, std.mem.trim(u8, return_type.slice(source), " \t\r\n"), "void");
 }
 
 fn zigVoidCapable(source: []const u8, boundary: bindings.TSNode) bool {
@@ -721,6 +741,11 @@ test "guard grammar fields resolve against embedded grammars" {
             .source = "def process(user):\n    if user.is_active:\n        send_email(user)\n",
             .body_type = "block",
         },
+        .{
+            .lang = .c_sharp,
+            .source = "class Service {\n    void Process(User user) {\n        if (user.IsActive) {\n            SendEmail(user);\n        }\n    }\n}\n",
+            .body_type = "block",
+        },
     };
 
     for (samples) |sample| {
@@ -792,6 +817,11 @@ test "if with else stays advisory" {
 
 test "if containing comments stays advisory" {
     const source = "function process(user: User): void {\n  if (user.isActive) {\n    // notify the user\n    sendEmail(user);\n  }\n}\n";
+    try expectNoGuards(source, .typescript);
+}
+
+test "comment after the if keeps it advisory" {
+    const source = "function process(user: User): void {\n  if (user.isActive) {\n    sendEmail(user);\n  }\n  // done\n}\n";
     try expectNoGuards(source, .typescript);
 }
 
@@ -1023,4 +1053,56 @@ test "Python if containing a comment stays advisory" {
 test "Python multi-line string in body stays advisory" {
     const source = "def process(user):\n    if user.is_active:\n        send_email(\"\"\"hello\nworld\"\"\")\n";
     try expectNoGuards(source, .python);
+}
+
+test "guard extraction flattens tail-position void C# method" {
+    const source = "class Service {\n    void Process(User user) {\n        if (user.IsActive) {\n            SendEmail(user);\n        }\n    }\n}\n";
+    const expected = "class Service {\n    void Process(User user) {\n        if (!(user.IsActive)) { return; }\n        SendEmail(user);\n    }\n}\n";
+    try expectGuarded(source, .c_sharp, expected);
+}
+
+test "C# local function with void type is eligible" {
+    const source = "class Service {\n    void Process(User user) {\n        void Local() {\n            if (user.IsActive) {\n                SendEmail(user);\n            }\n        }\n    }\n}\n";
+    const expected = "class Service {\n    void Process(User user) {\n        void Local() {\n            if (!(user.IsActive)) { return; }\n            SendEmail(user);\n        }\n    }\n}\n";
+    try expectGuarded(source, .c_sharp, expected);
+}
+
+test "C# statement after the if stays advisory" {
+    const source = "class Service {\n    void Process(User user) {\n        if (user.IsActive) {\n            SendEmail(user);\n        }\n        LogDone();\n    }\n}\n";
+    try expectNoGuards(source, .c_sharp);
+}
+
+test "C# async Task method stays advisory" {
+    const source = "class Service {\n    async Task Process(User user) {\n        if (user.IsActive) {\n            SendEmail(user);\n        }\n    }\n}\n";
+    try expectNoGuards(source, .c_sharp);
+}
+
+test "C# non-void method stays advisory" {
+    const source = "class Service {\n    int Compute(User user) {\n        if (user.IsActive) {\n            SendEmail(user);\n        }\n    }\n}\n";
+    try expectNoGuards(source, .c_sharp);
+}
+
+test "C# if inside catch clause stays advisory" {
+    const source = "class Service {\n    void Process() {\n        try {\n            Risky();\n        } catch (Exception err) {\n            if (Check(err)) {\n                Recover();\n            }\n        }\n    }\n}\n";
+    try expectNoGuards(source, .c_sharp);
+}
+
+test "C# if inside finally clause stays advisory" {
+    const source = "class Service {\n    void Process() {\n        try {\n            Risky();\n        } finally {\n            if (Check()) {\n                Recover();\n            }\n        }\n    }\n}\n";
+    try expectNoGuards(source, .c_sharp);
+}
+
+test "C# if inside switch case stays advisory" {
+    const source = "class Service {\n    void Process(int x) {\n        switch (x) {\n            case 1: {\n                if (Check(x)) {\n                    SendEmail(x);\n                }\n            }\n        }\n    }\n}\n";
+    try expectNoGuards(source, .c_sharp);
+}
+
+test "C# if inside lambda body stays advisory" {
+    const source = "class Service {\n    void Process() {\n        Action action = () => {\n            if (Check()) {\n                SendEmail();\n            }\n        };\n    }\n}\n";
+    try expectNoGuards(source, .c_sharp);
+}
+
+test "C# if with else stays advisory" {
+    const source = "class Service {\n    void Process(User user) {\n        if (user.IsActive) {\n            SendEmail(user);\n        } else {\n            LogDone();\n        }\n    }\n}\n";
+    try expectNoGuards(source, .c_sharp);
 }
