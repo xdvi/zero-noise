@@ -8,7 +8,7 @@
 ## 1. Intent and why
 
 `zero-noise` is a native Zig engine that audits structural code noise and applies
-test-bracketed refactors across Go, Rust, TypeScript, Python, C#, and Zig. It ships as a
+transactional refactors across Go, Rust, TypeScript, Python, C#, and Zig. It ships as a
 CLI, an MCP server, and a plugin for four agent harnesses.
 
 The goal is **utility parity with REA for the refactoring domain**: zero-noise should
@@ -127,8 +127,8 @@ Cuts and reframings:
 
 - **`--fix` is folded into the safe flow.** Dry-run becomes the default everywhere.
   Applying engine-generated changes requires explicit opt-in (`fix=true` /
-  `--fix`), and the existing hash/syntax/test bracket remains mandatory. No separate
-  blind path.
+  `--fix`), and the hash lock and syntax validation remain mandatory, with the
+  guard/predicate test requirement landing in P0. No separate blind path.
 - **`evaluate_rules` is frozen.** Kept for compatibility; no new work.
 - **"Score 0" is retired as an acceptance criterion.** Replaced by no-regression
   (baseline diff) and trend visibility.
@@ -180,8 +180,9 @@ is machine-applicable. Guard clauses, predicates, and constants are left to the 
 
 **Acceptance:**
 
-- Each pass ships fixtures for every supported language; patched code parses; fixture
-  test suites pass when present.
+- Each pass ships fixtures for every language it enables, with a documented
+  advisory fallback where naming or typing cannot be synthesized; patched code
+  parses; fixture test suites pass when present.
 - Proposals are deterministic for identical input.
 - Unsafe shapes are skipped with a recorded limitation, never emitted as patches.
 - Existing tools keep their signatures; `zig build test` is green and leak-free.
@@ -311,8 +312,8 @@ build does not have.
 - **Bench gate:** new analysis modules add bench cases and respect the existing
   performance envelope.
 - **Formats:** preserve text/json/sarif/compact contracts; version new report schemas.
-- **Safety invariants:** hash lock, syntax validation, test bracket, atomic rollback,
-  workspace confinement, no behavior changes.
+- **Safety invariants:** hash lock, syntax validation, atomic rollback, workspace
+  confinement, the guard/predicate test requirement, no behavior changes.
 
 ## 8. My calls (not user decisions)
 
