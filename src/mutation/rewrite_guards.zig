@@ -51,17 +51,41 @@ const zig_syntax = GuardSyntax{
     .invert_prefix = "!",
 };
 
+/// Rust `if` is an expression; only statement positions qualify, and `match`
+/// arms, loops, and closures all force an advisory result.
+const rust_syntax = GuardSyntax{
+    .if_nodes = &.{"if_expression"},
+    .condition_field = "condition",
+    .body_field = "consequence",
+    .else_field = "alternative",
+    .early_return = "{ return; }",
+    .invert_prefix = "!",
+};
+
+/// Python bodies are brace-less `block` nodes indented by tabs or spaces; the
+/// guard line uses `not (...)` and carries the `:` itself.
+const python_syntax = GuardSyntax{
+    .if_nodes = &.{"if_statement"},
+    .condition_field = "condition",
+    .body_field = "consequence",
+    .else_field = "alternative",
+    .early_return = "return",
+    .invert_prefix = "not ",
+};
+
 fn syntaxFor(lang: grammars.Language) ?*const GuardSyntax {
     return switch (lang) {
         .typescript, .tsx => &typescript_syntax,
         .go => &go_syntax,
         .zig => &zig_syntax,
+        .rust => &rust_syntax,
+        .python => &python_syntax,
         else => null,
     };
 }
 
 pub fn supportedLanguages() []const grammars.Language {
-    return &.{ .typescript, .tsx, .go, .zig };
+    return &.{ .typescript, .tsx, .go, .zig, .rust, .python };
 }
 
 pub fn collect(
@@ -237,10 +261,10 @@ fn hasUnsupportedConstruct(syntax: *const GuardSyntax, if_node: bindings.TSNode)
 }
 
 fn subtreeContainsType(node: bindings.TSNode, node_type: []const u8) bool {
+    if (std.mem.eql(u8, node.getType(), node_type)) return true;
     var i: u32 = 0;
     while (i < node.namedChildCount()) : (i += 1) {
         const child = node.namedChild(i);
-        if (std.mem.eql(u8, child.getType(), node_type)) return true;
         if (subtreeContainsType(child, node_type)) return true;
     }
     return false;
@@ -318,6 +342,9 @@ fn isVoidCapable(lang: grammars.Language, source: []const u8, boundary: bindings
         .typescript, .tsx => tsVoidCapable(source, boundary),
         .go => boundary.childByFieldName("result").isNull(),
         .zig => zigVoidCapable(source, boundary),
+        .rust => boundary.childByFieldName("return_type").isNull(),
+        // An early `return` is valid in every Python function.
+        .python => true,
         else => false,
     };
 }
@@ -684,6 +711,16 @@ test "guard grammar fields resolve against embedded grammars" {
             .source = "fn process(user: User) void {\n    if (user.is_active) {\n        send_email(user);\n    }\n}\n",
             .body_type = "block_expression",
         },
+        .{
+            .lang = .rust,
+            .source = "fn process(user: &User) {\n    if user.is_active {\n        send_email(user);\n    }\n}\n",
+            .body_type = "block",
+        },
+        .{
+            .lang = .python,
+            .source = "def process(user):\n    if user.is_active:\n        send_email(user)\n",
+            .body_type = "block",
+        },
     };
 
     for (samples) |sample| {
@@ -882,4 +919,108 @@ test "Zig if with payload capture stays advisory" {
 test "Zig if with inline else stays advisory" {
     const source = "fn process(flag: bool) void {\n    if (flag) {\n        send_email();\n    } else {\n        log_done();\n    }\n}\n";
     try expectNoGuards(source, .zig);
+}
+
+test "guard extraction flattens tail-position void Rust function" {
+    const source = "fn process(user: &User) {\n    if user.is_active {\n        send_email(user);\n    }\n}\n";
+    const expected = "fn process(user: &User) {\n    if (!(user.is_active)) { return; }\n    send_email(user);\n}\n";
+    try expectGuarded(source, .rust, expected);
+}
+
+test "Rust statement after the if stays advisory" {
+    const source = "fn process(user: &User) {\n    if user.is_active {\n        send_email(user);\n    }\n    log_done();\n}\n";
+    try expectNoGuards(source, .rust);
+}
+
+test "Rust if inside while loop stays advisory" {
+    const source = "fn process(flag: bool) {\n    while flag {\n        if check() {\n            send_email();\n        }\n    }\n}\n";
+    try expectNoGuards(source, .rust);
+}
+
+test "Rust if inside match arm stays advisory" {
+    const source = "fn process(value: Option<u8>) {\n    match value {\n        Some(_) => {\n            if check() {\n                send_email();\n            }\n        }\n        None => {}\n    }\n}\n";
+    try expectNoGuards(source, .rust);
+}
+
+test "Rust if inside closure body stays advisory" {
+    const source = "fn process() {\n    let callback = || {\n        if check() {\n            send_email();\n        }\n    };\n}\n";
+    try expectNoGuards(source, .rust);
+}
+
+test "Rust function with return type stays advisory" {
+    const source = "fn process(user: &User) -> bool {\n    if user.is_active {\n        send_email(user);\n    }\n}\n";
+    try expectNoGuards(source, .rust);
+}
+
+test "Rust if in let initializer stays advisory" {
+    const source = "fn process(flag: bool) {\n    let unit = if flag {};\n}\n";
+    try expectNoGuards(source, .rust);
+}
+
+test "Rust if let stays advisory" {
+    const source = "fn process(opt: Option<u8>) {\n    if let Some(value) = opt {\n        send_email(value);\n    }\n}\n";
+    try expectNoGuards(source, .rust);
+}
+
+test "Rust if with else stays advisory" {
+    const source = "fn process(user: &User) {\n    if user.is_active {\n        send_email(user);\n    } else {\n        log_done();\n    }\n}\n";
+    try expectNoGuards(source, .rust);
+}
+
+test "guard extraction flattens tail-position Python function" {
+    const source = "def process(user):\n    if user.is_active:\n        send_email(user)\n";
+    const expected = "def process(user):\n    if not (user.is_active): return\n    send_email(user)\n";
+    try expectGuarded(source, .python, expected);
+}
+
+test "Python multi-statement body de-indents every line" {
+    const source = "def process(user):\n    if user.is_active:\n        send_email(user)\n        log_done()\n";
+    const expected = "def process(user):\n    if not (user.is_active): return\n    send_email(user)\n    log_done()\n";
+    try expectGuarded(source, .python, expected);
+}
+
+test "Python tab indentation de-indents by one tab" {
+    const source = "def process(user):\n\tif user.is_active:\n\t\tsend_email(user)\n";
+    const expected = "def process(user):\n\tif not (user.is_active): return\n\tsend_email(user)\n";
+    try expectGuarded(source, .python, expected);
+}
+
+test "Python statement after the if stays advisory" {
+    const source = "def process(user):\n    if user.is_active:\n        send_email(user)\n    log_done()\n";
+    try expectNoGuards(source, .python);
+}
+
+test "Python if inside for body stays advisory" {
+    const source = "def process(users):\n    for user in users:\n        if user.is_active:\n            send_email(user)\n";
+    try expectNoGuards(source, .python);
+}
+
+test "Python if inside except block stays advisory" {
+    const source = "def process():\n    try:\n        risky()\n    except Exception:\n        if check():\n            recover()\n";
+    try expectNoGuards(source, .python);
+}
+
+test "Python if inside finally block stays advisory" {
+    const source = "def process():\n    try:\n        risky()\n    finally:\n        if check():\n            recover()\n";
+    try expectNoGuards(source, .python);
+}
+
+test "Python if in an elif chain stays advisory" {
+    const source = "def process(user):\n    if user.is_active:\n        send_email(user)\n    elif user.is_vip:\n        call(user)\n";
+    try expectNoGuards(source, .python);
+}
+
+test "Python if with else stays advisory" {
+    const source = "def process(user):\n    if user.is_active:\n        send_email(user)\n    else:\n        log_done()\n";
+    try expectNoGuards(source, .python);
+}
+
+test "Python if containing a comment stays advisory" {
+    const source = "def process(user):\n    if user.is_active:\n        # notify the user\n        send_email(user)\n";
+    try expectNoGuards(source, .python);
+}
+
+test "Python multi-line string in body stays advisory" {
+    const source = "def process(user):\n    if user.is_active:\n        send_email(\"\"\"hello\nworld\"\"\")\n";
+    try expectNoGuards(source, .python);
 }
