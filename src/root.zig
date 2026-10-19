@@ -17,6 +17,13 @@ pub const analysis = struct {
 };
 
 pub const mutation = struct {
+    pub const edits = @import("mutation/edits.zig");
+    pub const proposal = @import("mutation/proposal.zig");
+    pub const propose = @import("mutation/propose.zig");
+    pub const rewrite_closures = @import("mutation/rewrite_closures.zig");
+    pub const rewrite_constants = @import("mutation/rewrite_constants.zig");
+    pub const rewrite_guards = @import("mutation/rewrite_guards.zig");
+    pub const rewrite_predicates = @import("mutation/rewrite_predicates.zig");
     pub const runner = @import("mutation/runner.zig");
     pub const io = @import("mutation/io.zig");
     pub const patch = @import("mutation/patch.zig");
@@ -64,6 +71,13 @@ test {
     _ = @import("analysis/noise.zig");
     _ = @import("analysis/complexity.zig");
     _ = @import("analysis/blast.zig");
+    _ = @import("mutation/edits.zig");
+    _ = @import("mutation/proposal.zig");
+    _ = @import("mutation/propose.zig");
+    _ = @import("mutation/rewrite_closures.zig");
+    _ = @import("mutation/rewrite_constants.zig");
+    _ = @import("mutation/rewrite_guards.zig");
+    _ = @import("mutation/rewrite_predicates.zig");
     _ = @import("mutation/rewriter.zig");
     _ = @import("mutation/runner.zig");
     _ = @import("mutation/io.zig");
