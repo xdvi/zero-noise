@@ -84,7 +84,7 @@ pub fn executeSafeRefactorDirect(allocator: std.mem.Allocator, params: SafeRefac
         return blocked;
     }
 
-    const simplified_from_deps = prepareCandidate(allocator, deps, filepath, candidate_content, patch_file, target_patch);
+    const simplified_from_deps = prepareCandidate(allocator, deps, filepath, candidate_content, patch_content, patch_file, target_patch);
     defer if (simplified_from_deps) |sc| allocator.free(sc);
 
     const effective_candidate = if (candidate_content) |cc| cc else simplified_from_deps;
@@ -331,10 +331,11 @@ fn prepareCandidate(
     deps: *const deps_mod.Deps,
     filepath: []const u8,
     candidate_content: ?[]const u8,
+    patch_content: ?[]const u8,
     patch_file: ?[]const u8,
     target_patch: ?[]const u8,
 ) ?[]u8 {
-    if (candidate_content != null or patch_file != null or target_patch != null) return null;
+    if (candidate_content != null or patch_content != null or patch_file != null or target_patch != null) return null;
     const original_content = deps.fs.readFileAlloc(allocator, filepath) catch return null;
     defer allocator.free(original_content);
     return deps.simplify(allocator, original_content) catch null;
