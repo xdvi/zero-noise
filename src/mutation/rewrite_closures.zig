@@ -26,17 +26,24 @@ fn syntaxFor(lang: grammars.Language) ?Syntax {
             .member_node = "member_expression",
             .host_nodes = &.{ "statement_block", "program" },
         },
+        .python => .{
+            .closure_nodes = &.{"lambda"},
+            .argument_nodes = &.{"argument_list"},
+            .member_node = "attribute",
+            .host_nodes = &.{ "block", "module" },
+        },
         else => null,
     };
 }
 
 pub fn supportedLanguages() []const grammars.Language {
-    return &.{ .typescript, .tsx };
+    return &.{ .typescript, .tsx, .python };
 }
 
 const Context = struct {
     allocator: std.mem.Allocator,
     source: []const u8,
+    lang: grammars.Language,
     syntax: Syntax,
     proposals: std.ArrayList(proposal.Proposal) = .empty,
     used_names: std.StringHashMap(void),
@@ -82,6 +89,7 @@ pub fn collect(
     var ctx = Context{
         .allocator = allocator,
         .source = source,
+        .lang = lang,
         .syntax = syntax,
         .used_names = std.StringHashMap(void).init(allocator),
     };
@@ -116,11 +124,19 @@ fn collectClosure(ctx: *Context, closure: bindings.TSNode) !void {
     if (length <= max_closure_len) return;
     if (!isInsideCallArguments(ctx, closure)) return;
 
-    if (isAsync(ctx, closure)) {
-        return ctx.appendAdvisory(closure, "closure is async");
-    }
-    if (forbiddenConstruct(ctx, closure)) |reason| {
-        return ctx.appendAdvisory(closure, reason);
+    if (ctx.lang == .python) {
+        const body = closure.childByFieldName("body");
+        if (body.isNull()) return;
+        if (body.startPoint().row != body.endPoint().row) {
+            return ctx.appendAdvisory(closure, "closure body spans multiple lines");
+        }
+    } else {
+        if (isAsync(ctx, closure)) {
+            return ctx.appendAdvisory(closure, "closure is async");
+        }
+        if (forbiddenConstruct(ctx, closure)) |reason| {
+            return ctx.appendAdvisory(closure, reason);
+        }
     }
 
     const statement = containingStatement(ctx, closure) orelse {
@@ -215,24 +231,38 @@ fn appendExtraction(
     name: []const u8,
 ) !void {
     const body = closureBody(closure) orelse return;
-    const is_block = std.mem.eql(u8, body.getType(), "statement_block");
+    const statement_indent = lineIndent(ctx.source, statement.startByte());
 
     var replacement: std.ArrayList(u8) = .empty;
     defer replacement.deinit(ctx.allocator);
 
-    try replacement.appendSlice(ctx.allocator, lineIndent(ctx.source, statement.startByte()));
-    try replacement.appendSlice(ctx.allocator, "function ");
-    try replacement.appendSlice(ctx.allocator, name);
-    try appendClosureParams(ctx, &replacement, closure);
-    try replacement.append(ctx.allocator, ' ');
-    if (is_block) {
+    if (ctx.lang == .python) {
+        try replacement.appendSlice(ctx.allocator, statement_indent);
+        try replacement.appendSlice(ctx.allocator, "def ");
+        try replacement.appendSlice(ctx.allocator, name);
+        try appendClosureParams(ctx, &replacement, closure);
+        try replacement.appendSlice(ctx.allocator, ":\n");
+        try replacement.appendSlice(ctx.allocator, statement_indent);
+        try replacement.appendSlice(ctx.allocator, pythonIndentUnit(ctx, statement));
+        try replacement.appendSlice(ctx.allocator, "return ");
         try replacement.appendSlice(ctx.allocator, body.slice(ctx.source));
+        try replacement.append(ctx.allocator, '\n');
     } else {
-        try replacement.appendSlice(ctx.allocator, "{ return ");
-        try replacement.appendSlice(ctx.allocator, body.slice(ctx.source));
-        try replacement.appendSlice(ctx.allocator, "; }");
+        const is_block = std.mem.eql(u8, body.getType(), "statement_block");
+        try replacement.appendSlice(ctx.allocator, statement_indent);
+        try replacement.appendSlice(ctx.allocator, "function ");
+        try replacement.appendSlice(ctx.allocator, name);
+        try appendClosureParams(ctx, &replacement, closure);
+        try replacement.append(ctx.allocator, ' ');
+        if (is_block) {
+            try replacement.appendSlice(ctx.allocator, body.slice(ctx.source));
+        } else {
+            try replacement.appendSlice(ctx.allocator, "{ return ");
+            try replacement.appendSlice(ctx.allocator, body.slice(ctx.source));
+            try replacement.appendSlice(ctx.allocator, "; }");
+        }
+        try replacement.append(ctx.allocator, '\n');
     }
-    try replacement.append(ctx.allocator, '\n');
 
     const proposal_edits = try ctx.allocator.alloc(edits.Edit, 2);
     errdefer ctx.allocator.free(proposal_edits);
@@ -274,8 +304,15 @@ fn appendClosureParams(ctx: *Context, out: *std.ArrayList(u8), closure: bindings
     const count = closure.namedChildCount();
     while (i < count) : (i += 1) {
         const child = closure.namedChild(i);
-        if (std.mem.eql(u8, child.getType(), "formal_parameters")) {
+        const child_type = child.getType();
+        if (std.mem.eql(u8, child_type, "formal_parameters")) {
             try out.appendSlice(ctx.allocator, child.slice(ctx.source));
+            return;
+        }
+        if (std.mem.eql(u8, child_type, "lambda_parameters")) {
+            try out.append(ctx.allocator, '(');
+            try out.appendSlice(ctx.allocator, child.slice(ctx.source));
+            try out.append(ctx.allocator, ')');
             return;
         }
     }
@@ -285,7 +322,28 @@ fn appendClosureParams(ctx: *Context, out: *std.ArrayList(u8), closure: bindings
         try out.append(ctx.allocator, '(');
         try out.appendSlice(ctx.allocator, parameter.slice(ctx.source));
         try out.append(ctx.allocator, ')');
+        return;
     }
+
+    if (ctx.lang == .python) {
+        try out.appendSlice(ctx.allocator, "()");
+    }
+}
+
+/// Indentation step for the emitted Python `def` body, taken from the block
+/// that hosts the containing statement.
+fn pythonIndentUnit(ctx: *Context, statement: bindings.TSNode) []const u8 {
+    const parent = statement.parent();
+    if (parent.isNull()) return "    ";
+    if (std.mem.eql(u8, parent.getType(), "module")) return "    ";
+
+    const owner = parent.parent();
+    if (owner.isNull()) return "    ";
+
+    const statement_indent = lineIndent(ctx.source, statement.startByte());
+    const owner_indent = lineIndent(ctx.source, owner.startByte());
+    if (statement_indent.len > owner_indent.len) return statement_indent[owner_indent.len..];
+    return "    ";
 }
 
 fn closureBody(closure: bindings.TSNode) ?bindings.TSNode {
@@ -318,7 +376,10 @@ fn collectIdentifiers(ctx: *Context, node: bindings.TSNode) !void {
 fn awardClosureName(ctx: *Context) ![]u8 {
     var index: usize = 1;
     while (index < 1000) : (index += 1) {
-        const candidate = try std.fmt.allocPrint(ctx.allocator, "extractedClosure{d}", .{index});
+        const candidate = if (ctx.lang == .python)
+            try std.fmt.allocPrint(ctx.allocator, "extracted_closure{d}", .{index})
+        else
+            try std.fmt.allocPrint(ctx.allocator, "extractedClosure{d}", .{index});
         if (!nameTaken(ctx, candidate)) {
             try ctx.awarded_names.append(ctx.allocator, candidate);
             return candidate;
@@ -689,4 +750,174 @@ test "tsx arrow closure in argument position is extracted" {
     const output = try applyProposal(allocator, source, proposals[0]);
     defer allocator.free(output);
     try std.testing.expectEqualStrings(expected, output);
+}
+
+test "collectProposals wires predicate and closure proposals with hashes" {
+    const propose = @import("propose.zig");
+    const allocator = std.testing.allocator;
+    const source =
+        \\function isReadyFor(user: User): boolean {
+        \\  if (user.isActive && user.hasPaid) {
+        \\    return true;
+        \\  }
+        \\  return false;
+        \\}
+        \\
+        \\runTask((payload: TaskPayload) => {
+        \\  console.log(payload.id);
+        \\  return payload.title + payload.subtitle;
+        \\});
+        \\
+    ;
+
+    var result = try propose.collectProposals(allocator, source, .typescript, .{});
+    defer propose.deinitCollectResult(allocator, &result);
+
+    try std.testing.expect(!result.parse_error);
+    try std.testing.expectEqual(@as(usize, 2), result.proposals.len);
+    try std.testing.expectEqual(proposal.ProposalKind.predicate, result.proposals[0].kind);
+    try std.testing.expectEqual(proposal.ProposalKind.closure, result.proposals[1].kind);
+    for (result.proposals) |p| {
+        try std.testing.expectEqual(@as(usize, 64), p.expected_hash.len);
+    }
+}
+
+test "probe python closure node types" {
+    const source =
+        \\entries = sorted(entries, key=lambda entry: entry.name + entry.category)
+        \\
+        \\process(items, lambda a, b: a + b, "name")
+    ;
+    const py_lang = grammars.Language.python.getTsLanguage().?;
+    var parser = try bindings.getThreadParser();
+    defer bindings.deinitThreadParser();
+    try std.testing.expect(parser.setLanguage(py_lang));
+
+    var tree = try parser.parseString(source);
+    defer tree.deinit();
+
+    const call = tree.rootNode().namedChild(0).namedChild(1);
+    try std.testing.expectEqualStrings("call", call.getType());
+    const args = call.childByFieldName("arguments");
+    try std.testing.expectEqualStrings("argument_list", args.getType());
+
+    const keyword = args.namedChild(1);
+    try std.testing.expectEqualStrings("keyword_argument", keyword.getType());
+    try std.testing.expectEqualStrings("key", keyword.childByFieldName("name").slice(source));
+    const lambda = keyword.childByFieldName("value");
+    try std.testing.expectEqualStrings("lambda", lambda.getType());
+    try std.testing.expectEqualStrings("lambda_parameters", lambda.childByFieldName("parameters").getType());
+    try std.testing.expectEqualStrings("entry", lambda.childByFieldName("parameters").slice(source));
+    try std.testing.expectEqualStrings("entry.name + entry.category", lambda.childByFieldName("body").slice(source));
+
+    const call2 = tree.rootNode().namedChild(1);
+    const second_lambda = call2.childByFieldName("arguments").namedChild(1);
+    try std.testing.expectEqualStrings("lambda", second_lambda.getType());
+    try std.testing.expectEqualStrings("a, b", second_lambda.childByFieldName("parameters").slice(source));
+}
+
+test "extracts long python lambda before the containing statement" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\entries = sorted(entries, key=lambda entry: entry.name + entry.category + entry.subcategory + entry.extra + entry.description)
+        \\
+    ;
+    const expected =
+        \\def extracted_closure1(entry):
+        \\    return entry.name + entry.category + entry.subcategory + entry.extra + entry.description
+        \\entries = sorted(entries, key=extracted_closure1)
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .python);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const p = proposals[0];
+    try std.testing.expectEqual(proposal.ProposalKind.closure, p.kind);
+    try std.testing.expectEqualStrings("long-closure", p.rule);
+    try std.testing.expectEqual(proposal.Confidence.medium, p.confidence);
+    try std.testing.expect(p.naming_required);
+    try std.testing.expect(p.safe_to_apply);
+    try std.testing.expectEqual(@as(usize, 2), p.edits.len);
+    try std.testing.expectEqual(@as(u32, 1), p.line);
+    try std.testing.expect(std.mem.indexOf(u8, p.message, "extracted_closure1") != null);
+
+    const output = try applyProposal(allocator, source, p);
+    defer allocator.free(output);
+    try std.testing.expectEqualStrings(expected, output);
+}
+
+test "python lambda keeps nested indentation" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\def build(entries):
+        \\    return sorted(entries, key=lambda entry: entry.name + entry.category + entry.subcategory + entry.extra + entry.description)
+        \\
+    ;
+    const expected =
+        \\def build(entries):
+        \\    def extracted_closure1(entry):
+        \\        return entry.name + entry.category + entry.subcategory + entry.extra + entry.description
+        \\    return sorted(entries, key=extracted_closure1)
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .python);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    try std.testing.expect(proposals[0].safe_to_apply);
+
+    const output = try applyProposal(allocator, source, proposals[0]);
+    defer allocator.free(output);
+    try std.testing.expectEqualStrings(expected, output);
+}
+
+test "python lambda assigned to a variable yields no proposal" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\handler = lambda entry: entry.name + entry.category + entry.subcategory + entry.extra + entry.description
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .python);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 0), proposals.len);
+}
+
+test "python short lambda yields no proposal" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\entries = sorted(entries, key=lambda entry: entry.name)
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .python);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 0), proposals.len);
+}
+
+test "python closure name collision appends counter" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\def extracted_closure1(entry):
+        \\    return entry
+        \\
+        \\entries = sorted(entries, key=lambda entry: entry.name + entry.category + entry.subcategory + entry.extra + entry.description)
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .python);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    try std.testing.expect(proposals[0].safe_to_apply);
+    try std.testing.expect(std.mem.indexOf(u8, proposals[0].message, "extracted_closure2") != null);
+
+    const output = try applyProposal(allocator, source, proposals[0]);
+    defer allocator.free(output);
+    try std.testing.expect(std.mem.indexOf(u8, output, "def extracted_closure2(entry):") != null);
 }
