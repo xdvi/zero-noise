@@ -5,7 +5,7 @@ const proposal = @import("proposal.zig");
 const edits = @import("edits.zig");
 
 pub fn supportedLanguages() []const grammars.Language {
-    return &.{ .typescript, .tsx, .python, .go, .zig };
+    return &.{ .typescript, .tsx, .python, .go, .zig, .rust, .c_sharp };
 }
 
 const LiteralKind = enum { string, number, boolean };
@@ -37,6 +37,16 @@ fn literalSyntax(lang: grammars.Language) ?LiteralSyntax {
             .string_types = &.{"string"},
             .number_types = &.{"integer"},
             .boolean_types = &.{},
+        },
+        .rust => .{
+            .string_types = &.{"string_literal"},
+            .number_types = &.{ "integer_literal", "float_literal" },
+            .boolean_types = &.{},
+        },
+        .c_sharp => .{
+            .string_types = &.{ "string_literal", "verbatim_string_literal" },
+            .number_types = &.{"integer_literal"},
+            .boolean_types = &.{"boolean_literal"},
         },
         else => null,
     };
@@ -90,6 +100,7 @@ const case_pattern_types = [_][]const u8{
 };
 
 const Occurrence = struct {
+    node: bindings.TSNode,
     start: u32,
     end: u32,
     line: u32,
@@ -116,8 +127,9 @@ const Collector = struct {
 };
 
 /// Extracts repeated literals (>= 3 eligible occurrences) into named constants.
-/// One proposal per literal; TS/Python insertions land after the last import
-/// (Python falls back to after the module docstring, then file start).
+/// One proposal per literal; each language anchors the declaration after its
+/// last import-like declaration, falling back to file start (Python: after the
+/// module docstring when present; Go: after the package clause).
 pub fn collect(
     allocator: std.mem.Allocator,
     source: []const u8,
@@ -235,6 +247,7 @@ fn recordLiteral(collector: *Collector, node: bindings.TSNode, kind: LiteralKind
 
     const point = node.startPoint();
     try gop.value_ptr.occurrences.append(collector.allocator, .{
+        .node = node,
         .start = node.startByte(),
         .end = node.endByte(),
         .line = point.row + 1,
@@ -262,6 +275,9 @@ fn buildProposal(
     const count: u32 = @intCast(entry.occurrences.items.len);
     const first = entry.occurrences.items[0];
 
+    var anchor: ?u32 = file_anchor;
+    var indent: []const u8 = "";
+
     if (!canExtract(lang, entry.kind)) {
         const message = try std.fmt.allocPrint(
             allocator,
@@ -271,20 +287,34 @@ fn buildProposal(
         return advisoryProposal(allocator, first, message);
     }
 
+    if (lang == .c_sharp) {
+        if (csharpClassBodyOffset(entry.occurrences.items)) |class_offset| {
+            anchor = class_offset;
+            indent = "    ";
+        } else {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "literal '{s}' repeated {d} times; occurrences span multiple classes (advisory)",
+                .{ candidate.key, count },
+            );
+            return advisoryProposal(allocator, first, message);
+        }
+    }
+
     const name = try uniqueName(allocator, candidate.key, entry.kind, identifiers, used_names);
     defer allocator.free(name);
     try used_names.put(try allocator.dupe(u8, name), {});
 
     const declaration = try renderDeclaration(allocator, lang, entry.kind, name, candidate.key);
     defer allocator.free(declaration);
-    const insertion_text = try buildInsertionText(allocator, declaration, source, file_anchor, "");
+    const insertion_text = try buildInsertionText(allocator, declaration, source, anchor, indent);
     errdefer allocator.free(insertion_text);
 
     const owned_edits = try allocator.alloc(edits.Edit, entry.occurrences.items.len + 1);
     errdefer allocator.free(owned_edits);
     for (owned_edits) |*edit| edit.* = .{ .start = 0, .end = 0, .replacement = "" };
 
-    const insertion_offset: u32 = file_anchor orelse 0;
+    const insertion_offset: u32 = anchor orelse 0;
     owned_edits[0] = .{
         .start = insertion_offset,
         .end = insertion_offset,
@@ -352,13 +382,16 @@ fn advisoryProposal(
 
 /// TS/TSX extract strings, template strings without substitutions, and
 /// numbers; Python extracts strings and integers; Go and Zig extract
-/// strings and numbers (bool literals are not collected).
+/// strings and numbers (bool literals are not collected); Rust extracts
+/// strings only; C# extracts strings, integers, and bools.
 fn canExtract(lang: grammars.Language, kind: LiteralKind) bool {
     return switch (lang) {
         .typescript, .tsx => kind == .string or kind == .number,
         .python => kind == .string or kind == .number,
         .go => kind == .string or kind == .number,
         .zig => kind == .string or kind == .number,
+        .rust => kind == .string,
+        .c_sharp => true,
         else => false,
     };
 }
@@ -370,12 +403,17 @@ fn renderDeclaration(
     name: []const u8,
     literal: []const u8,
 ) ![]u8 {
-    _ = kind;
     return switch (lang) {
         .typescript, .tsx => std.fmt.allocPrint(allocator, "const {s} = {s};", .{ name, literal }),
         .python => std.fmt.allocPrint(allocator, "{s} = {s}", .{ name, literal }),
         .go => std.fmt.allocPrint(allocator, "const {s} = {s}", .{ name, literal }),
         .zig => std.fmt.allocPrint(allocator, "const {s} = {s};", .{ name, literal }),
+        .rust => std.fmt.allocPrint(allocator, "const {s}: &str = {s};", .{ name, literal }),
+        .c_sharp => switch (kind) {
+            .string => std.fmt.allocPrint(allocator, "const string {s} = {s};", .{ name, literal }),
+            .number => std.fmt.allocPrint(allocator, "const int {s} = {s};", .{ name, literal }),
+            .boolean => std.fmt.allocPrint(allocator, "const bool {s} = {s};", .{ name, literal }),
+        },
         else => unreachable,
     };
 }
@@ -414,6 +452,7 @@ fn fileInsertionOffset(lang: grammars.Language, root: bindings.TSNode, source: [
                 std.mem.eql(u8, child_type, "future_import_statement"),
             .go => std.mem.eql(u8, child_type, "import_declaration"),
             .zig => isZigImportDeclaration(child, source),
+            .rust => std.mem.eql(u8, child_type, "use_declaration"),
             else => false,
         };
         if (is_import) {
@@ -452,6 +491,43 @@ fn isZigImportDeclaration(child: bindings.TSNode, source: []const u8) bool {
         }
     }
     return false;
+}
+
+/// Offset just inside the `{` of the single class body containing every
+/// occurrence; `null` when occurrences span classes or sit outside one.
+fn csharpClassBodyOffset(occurrences: []const Occurrence) ?u32 {
+    const first_class = enclosingClass(occurrences[0].node) orelse return null;
+    for (occurrences[1..]) |occurrence| {
+        const class = enclosingClass(occurrence.node) orelse return null;
+        if (!sameNode(class, first_class)) return null;
+    }
+    const body = classBodyNode(first_class) orelse return null;
+    return body.startByte() + 1;
+}
+
+fn enclosingClass(node: bindings.TSNode) ?bindings.TSNode {
+    var current = node.parent();
+    while (!current.isNull()) {
+        const node_type = current.getType();
+        if (std.mem.eql(u8, node_type, "class_declaration")) return current;
+        if (std.mem.eql(u8, node_type, "struct_declaration") or
+            std.mem.eql(u8, node_type, "record_declaration") or
+            std.mem.eql(u8, node_type, "interface_declaration"))
+        {
+            return null;
+        }
+        current = current.parent();
+    }
+    return null;
+}
+
+fn classBodyNode(class_node: bindings.TSNode) ?bindings.TSNode {
+    var i: u32 = 0;
+    while (i < class_node.namedChildCount()) : (i += 1) {
+        const child = class_node.namedChild(i);
+        if (std.mem.eql(u8, child.getType(), "declaration_list")) return child;
+    }
+    return null;
 }
 
 fn pythonModuleDocstringEnd(root: bindings.TSNode) ?u32 {
@@ -580,13 +656,27 @@ fn hasChildType(node: bindings.TSNode, node_type: []const u8) bool {
     return false;
 }
 
+const unsafe_context_types = [_][]const u8{
+    // Rust macro arguments must stay literals (`println!`, `include_str!`).
+    "token_tree",
+    // JSX attribute values need `{expr}` braces; a bare identifier is invalid JSX.
+    "jsx_attribute",
+};
+
 fn isExcludedOccurrence(node: bindings.TSNode, source: []const u8, lang: grammars.Language) bool {
+    // A tagged template's `template_string` is syntax (`tag\`...\``), not a value.
+    if (std.mem.eql(u8, node.getType(), "template_string")) {
+        const parent = node.parent();
+        if (!parent.isNull() and std.mem.eql(u8, parent.getType(), "call_expression")) return true;
+    }
+
     var current = node.parent();
     while (!current.isNull()) {
         const node_type = current.getType();
         if (containsType(&import_export_types, node_type)) return true;
         if (containsType(&annotation_types, node_type)) return true;
         if (containsType(&case_pattern_types, node_type)) return true;
+        if (containsType(&unsafe_context_types, node_type)) return true;
         if (std.mem.eql(u8, node_type, "builtin_function") and
             std.mem.startsWith(u8, current.slice(source), "@import"))
         {
@@ -1126,6 +1216,208 @@ test "python declaration inserted after imports with no type annotation" {
             "c = ACTIVE\n",
         candidate,
     );
+}
+
+test "rust string declaration inserted after last use" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\use std::fmt;
+        \\
+        \\fn main() {
+        \\    let a = "hello";
+        \\    let b = "hello";
+        \\    let c = "hello";
+        \\    println!("{}{}{}", a, b, c);
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .rust);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const candidate = try candidateFor(allocator, source, proposals[0]);
+    defer allocator.free(candidate);
+    try std.testing.expectEqualStrings(
+        "use std::fmt;\n" ++
+            "const HELLO: &str = \"hello\";\n" ++
+            "\n" ++
+            "fn main() {\n" ++
+            "    let a = HELLO;\n" ++
+            "    let b = HELLO;\n" ++
+            "    let c = HELLO;\n" ++
+            "    println!(\"{}{}{}\", a, b, c);\n" ++
+            "}\n",
+        candidate,
+    );
+}
+
+test "rust int literals stay advisory" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\fn f() {
+        \\    let a = 42;
+        \\    let b = 42;
+        \\    let c = 42;
+        \\    let _ = (a, b, c);
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .rust);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const p = proposals[0];
+    try std.testing.expectEqual(proposal.ProposalKind.constant, p.kind);
+    try std.testing.expectEqualStrings("repeated-literal", p.rule);
+    try std.testing.expect(p.naming_required);
+    try std.testing.expect(!p.safe_to_apply);
+    try std.testing.expectEqual(@as(usize, 0), p.edits.len);
+}
+
+test "rust macro format strings are excluded" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\fn f() {
+        \\    println!("x");
+        \\    println!("x");
+        \\    println!("x");
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .rust);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 0), proposals.len);
+}
+
+test "c sharp single class placement" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\using System;
+        \\
+        \\class C {
+        \\    void M() {
+        \\        var a = "hello";
+        \\        var b = "hello";
+        \\        var c = "hello";
+        \\    }
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .c_sharp);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const candidate = try candidateFor(allocator, source, proposals[0]);
+    defer allocator.free(candidate);
+    try std.testing.expectEqualStrings(
+        "using System;\n" ++
+            "\n" ++
+            "class C {\n" ++
+            "    const string HELLO = \"hello\";\n" ++
+            "    void M() {\n" ++
+            "        var a = HELLO;\n" ++
+            "        var b = HELLO;\n" ++
+            "        var c = HELLO;\n" ++
+            "    }\n" ++
+            "}\n",
+        candidate,
+    );
+}
+
+test "c sharp multi class stays advisory" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\class A {
+        \\    void M() {
+        \\        var a = "hello";
+        \\        var b = "hello";
+        \\    }
+        \\}
+        \\
+        \\class B {
+        \\    void N() {
+        \\        var c = "hello";
+        \\    }
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .c_sharp);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 1), proposals.len);
+    const p = proposals[0];
+    try std.testing.expectEqual(proposal.ProposalKind.constant, p.kind);
+    try std.testing.expectEqualStrings("repeated-literal", p.rule);
+    try std.testing.expect(p.naming_required);
+    try std.testing.expect(!p.safe_to_apply);
+    try std.testing.expectEqual(@as(usize, 0), p.edits.len);
+    try std.testing.expect(std.mem.indexOf(u8, p.message, "classes") != null);
+}
+
+test "c sharp int and bool literals extract inside the class" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\class C {
+        \\    bool a = true;
+        \\    bool b = true;
+        \\    bool c = true;
+        \\    int x = 42;
+        \\    int y = 42;
+        \\    int z = 42;
+        \\}
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .c_sharp);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 2), proposals.len);
+
+    const bool_candidate = try candidateFor(allocator, source, proposals[0]);
+    defer allocator.free(bool_candidate);
+    try std.testing.expect(std.mem.indexOf(u8, bool_candidate, "    const bool TRUE = true;\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bool_candidate, "    bool a = TRUE;\n") != null);
+
+    const int_candidate = try candidateFor(allocator, source, proposals[1]);
+    defer allocator.free(int_candidate);
+    try std.testing.expect(std.mem.indexOf(u8, int_candidate, "    const int L_42 = 42;\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, int_candidate, "    int x = L_42;\n") != null);
+}
+
+test "typescript tagged templates stay untouched" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\const a = sql`select 1`;
+        \\const b = sql`select 1`;
+        \\const c = sql`select 1`;
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .typescript);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 0), proposals.len);
+}
+
+test "tsx jsx attribute strings stay untouched" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\const a = <div className="card" />;
+        \\const b = <div className="card" />;
+        \\const c = <div className="card" />;
+        \\
+    ;
+
+    const proposals = try collectForTest(allocator, source, .tsx);
+    defer deinitProposals(allocator, proposals);
+
+    try std.testing.expectEqual(@as(usize, 0), proposals.len);
 }
 
 test "python without imports keeps module docstring first" {
