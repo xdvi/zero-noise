@@ -39,26 +39,29 @@ The agent has access to 7 specialized tools (invokable via native MCP tools or C
 
 ## Mandate
 
-1. **Evidence & Assessment**:
-   - Run `inspect_evidence` or `zero-noise audit <path>` to get prioritized quick wins and capture `file_hash`.
-2. **Blast Radius & Safety Validation**:
-   - Verify safety condition (`safe_quick_win` vs `requires_signature_validation`). If modifying shared/public symbols, check caller dependencies with `blast_radius` or `zero-noise blast <symbol>`.
-3. **Analyze Opportunities**:
-   - Run `refactor_helper` or `zero-noise refactor <file> --dry-run` for repeated literals and boolean simplification candidates.
-4. **Consult Rules**:
-   - Consult `skills/zero-noise-refactor/reference/cleanliness_rules.md` and `reference/architecture_patterns.md`.
-5. **Refactor**:
+1. **Anti-Use Gate & Evidence Inspection**:
+   - Skip generated/vendored files (`*.pb.go`, `dist/`, `vendor/`), deliberate state machines/parsers, unbenchmarked hot paths, and unvalidated public APIs.
+   - Run `inspect_evidence` or `zero-noise audit <path> --format=compact` to prioritize quick wins and capture `state_lock_sha256` (`expected_hash`).
+2. **Blast Radius, Benchmark Baseline & Candidate Analysis**:
+   - Verify safety condition (`safe_quick_win` vs `requires_signature_validation`). Before touching shared/exported symbols, run `blast_radius` (`zero-noise blast <symbol> --root=.`).
+   - Run `refactor_helper` (`zero-noise refactor <file> --dry-run`) to preview repeated literals and boolean reductions.
+   - If the target is a hot path and the repo has benchmarks, run the baseline benchmark before editing.
+3. **Consult Rules**:
+   - Consult `skills/zero-noise-refactor/SKILL.md`, `reference/cleanliness_rules.md`, and `reference/architecture_patterns.md`.
+4. **Scoped Proposal (One Concern per Pass)**:
+   - Cap each pass/diff/commit to a single structural concern (`evidence → proposal → safe_refactor`; never blind-fix).
    - Extract named pure functions passed by reference. No anonymous closures > 2 lines or > 80 chars in argument position.
-   - Apply Early Return to flatten all nesting beyond 2 levels.
-   - Replace raw booleans with domain-named predicates (`hasActiveSession()`, not `user != null && user.token != ""`).
-   - Eliminate duplicated string literals — extract constants.
-   - Simplify boolean algebra (De Morgan, double negation).
-6. **State-Locked Validation**:
-   - Run `safe_refactor` (`zero-noise refactor <file> --test-cmd "<tests>" --fix`) with state lock protection.
-   - Re-run `audit_noise` (`zero-noise audit <path>`). Score must be 0 (exit code 0).
+   - Apply Early Return to flatten nesting beyond 2 levels while preserving short-circuit guard order.
+   - Replace compound booleans with domain predicates using the repo's **ubiquitous language**. If the domain name is ambiguous, propose candidates and wait for approval; never synonymize existing repo terms.
+   - Before applying De Morgan or boolean reductions, verify all operands are pure and free of side-effects, mutations, I/O, or nil/bounds panics; isolate side-effects first if present.
+   - Eliminate duplicated string literals (`>= 3`) into domain constants.
+5. **State-Locked Validation**:
+   - Run `safe_refactor` (`zero-noise refactor <file> --expected-hash="<sha256>" --test-cmd="<tests>" --fix`) with state-lock protection and atomic rollback.
+   - Re-run `audit_noise` (`zero-noise audit <path>`) to confirm score is `0` (exit code `0`), and re-run benchmarks on hot paths to confirm zero cost regression.
 
-7. **Never**:
-   - Leave dead code, commented-out blocks, or compat flags.
-   - Name extracted functions `helper`, `processData`, or `utils`.
-   - Sacrifice clarity for brevity (no nested ternaries).
-   - Change behavior — only structure.
+6. **Never**:
+   - Touch generated/vendored code, deliberate state machines, or unbenchmarked hot paths.
+   - Run blind `--fix` without inspecting evidence and formulating a single-concern proposal first.
+   - Synonymize established repository domain terms or invent generic names (`helper`, `processData`, `utils`).
+   - Apply De Morgan across side-effectful calls or short-circuit nil/bounds guards.
+   - Leave dead code, commented-out blocks, or compat flags, or change external behavior.

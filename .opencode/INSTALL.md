@@ -47,14 +47,17 @@ Project workspace discovery links:
 - Subagent: `.opencode/agent/zero-noise-refactor.md` -> `../../agents/zero-noise-refactor.md`
 - Command: `.opencode/command/zero-noise.md` -> `../../commands/zero-noise.md`
 
-### OpenCode Action and Tool Mapping
+### OpenCode MCP & CLI Tool Mapping
 
-| Skill Action             | Native OpenCode Tool                 |
-|--------------------------|--------------------------------------|
-| Static structural audit  | `bash` (`zero-noise audit <path>`)   |
-| Read reference guidelines| `read`                               |
-| Refactor edits           | `apply_patch` / `edit`               |
-| Final verification       | `bash` (`zero-noise audit <path>`)   |
+| MCP Tool (`zero-noise`) | CLI Fallback | Purpose |
+|-------------------------|--------------|---------|
+| `inspect_evidence` | `zero-noise audit <path> --format=compact` | Prioritized, state-locked Evidence Contract pack |
+| `audit_noise` | `zero-noise audit <path>` | Structural noise linter (nesting > 2, closures > 80 chars, raw booleans, commented code) |
+| `refactor_helper` | `zero-noise refactor <file> --dry-run` | DRY repeated literals and boolean algebraic simplification preview |
+| `complexity` | `zero-noise complexity <path> --threshold=15` | SonarSource Cognitive Complexity per function |
+| `blast_radius` | `zero-noise blast <symbol> --root=.` | Symbol usages, definitions, and cross-file coupling risk |
+| `safe_refactor` | `zero-noise refactor <file> --expected-hash="<sha256>" --test-cmd="<cmd>" --fix` | Test-bracketed refactoring runner with state-lock hash and atomic rollback |
+| `evaluate_rules` | `zero-noise audit <path>` | Declarative AST and regex anti-pattern rules from `.zero-noise-rules.json` |
 
 ## 4. Triggers
 

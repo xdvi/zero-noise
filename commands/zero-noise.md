@@ -24,39 +24,49 @@ The refactor suite provides 7 tools available as native MCP tools or native CLI 
 | `safe_refactor` | `zero-noise refactor` | Test-bracketed refactoring with state-lock hash verification and atomic rollback |
 | `evaluate_rules` | `zero-noise audit` | Declarative anti-pattern rules from `.zero-noise-rules.json` |
 
+## When NOT to Use
+
+Skip refactoring on:
+- Generated or vendored code (`*.pb.go`, `*.g.dart`, `dist/`, `vendor/`, `node_modules/`).
+- State machines, lexers, or protocol parsers with deliberate nested transition tables.
+- Performance-critical hot paths without an available benchmark gate.
+- Public/exported APIs before validating callers via `blast_radius`.
+
 ## Execution Workflow
 
-1. **Resolve Target Scope:**
-   - If `$ARGUMENTS` is provided, audit that file or directory.
-   - If empty, inspect `git status --porcelain` to identify modified files in the working directory.
+1. **Resolve Target Scope & Anti-Use Gate:**
+   - If `$ARGUMENTS` is provided, audit that file or directory; otherwise inspect `git status --porcelain`.
+   - Abort immediately if the target falls under **When NOT to Use**.
 
-2. **Step 1: Structural, Complexity & Rules Audit:**
-   - Run structural noise linter:
+2. **Step 1: Evidence, Structural & Complexity Audit:**
+   - Generate the unified Evidence Pack (`inspect_evidence` via MCP or `zero-noise audit <target-path> --format=compact`) and capture `state_lock_sha256` (`expected_hash`).
+   - Run structural noise and cognitive complexity checks:
      ```bash
      zero-noise audit <target-path>
+     zero-noise complexity <target-path> --threshold=15
      ```
-     Record issues: nesting depth > 2, unextracted inline closures, redundant ternaries, raw complex conditionals.
-   - Run cognitive complexity analyzer:
+   - If the target is a hot path and the repo has benchmarks, record baseline benchmark metrics before editing.
+
+3. **Step 2: Blast Radius & Candidate Analysis:**
+   - If touching public/shared symbols, evaluate caller impact first:
      ```bash
-     zero-noise complexity <target-path> --threshold 15
+     zero-noise blast <symbol> --root=.
+     ```
+   - Preview DRY literal extractions and algebraic boolean candidates:
+     ```bash
+     zero-noise refactor <target-path> --dry-run
      ```
 
-3. **Step 2: Impact & Blast Radius Analysis:**
-   - If renaming or extracting public/shared symbols, evaluate blast radius:
-     ```bash
-     zero-noise blast <symbol> --root .
-     ```
+4. **Step 3: Scoped Proposal (One Concern per Pass — Never Blind-Fix):**
+   - Cap each pass/diff/commit to **one structural concern** (guards, predicates/closures, boolean algebra, or DRY constants).
+   - Flatten nested blocks using **Early Return** guards (max depth `<= 2`), preserving short-circuit nil/bounds guard order.
+   - Extract inline closures (`>2` lines or `>80` chars) to **pure named functions** passed by reference.
+   - Replace compound conditions (`a && (b || c)`) with **domain predicates** preserving the repository's **ubiquitous language** (never synonymize existing repo terms; propose and wait for approval if domain naming is ambiguous).
+   - Verify operands are pure and panic-free before applying **De Morgan**; if side-effects or panic guards exist, isolate them first or skip.
 
-4. **Step 3: Zero-Noise Refactoring:**
-   - Flatten nested blocks using **Early Return** guards (max depth <= 2).
-   - Extract raw inline closures to **pure named functions** passed by reference.
-   - Replace complex conditions (`a && (b || c)`) with **semantic domain predicates** (`isAuthorizedSession()`).
-   - Eliminate duplicated literals into domain constants.
-   - Preserve exact external behavior and API contracts.
-
-5. **Step 4: Safe Verification & Rollback Protection:**
-   - Execute test-bracketed verification with automatic atomic rollback on failure:
+5. **Step 4: State-Locked Safe Delivery & Verification:**
+   - Execute the proposed pass with state-lock verification, test bracketing, and automatic atomic rollback:
      ```bash
-     zero-noise refactor <target-path> --test-cmd "<project-test-cmd>" --fix
+     zero-noise refactor <target-path> --expected-hash="<sha256>" --test-cmd="<project-test-cmd>" --fix
      ```
-   - Re-run `zero-noise audit <target-path>`. The score must reach 0 (exit code 0).
+   - Re-run `zero-noise audit <target-path>` (noise score must reach `0`, exit code `0`) and re-run benchmarks on hot paths to confirm zero cost regression.
