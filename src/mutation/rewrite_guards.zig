@@ -29,15 +29,39 @@ const typescript_syntax = GuardSyntax{
     .invert_prefix = "!",
 };
 
+/// `consequence` holds a `block`; a `statement_list` may sit between the `if`
+/// and its parent block, and `initializer` marks the two-statement form.
+const go_syntax = GuardSyntax{
+    .if_nodes = &.{"if_statement"},
+    .condition_field = "condition",
+    .body_field = "consequence",
+    .else_field = "alternative",
+    .early_return = "{ return }",
+    .invert_prefix = "!",
+};
+
+/// The Zig `if_statement` keeps its block under the `body` field and emits
+/// `else_clause` children without a field name.
+const zig_syntax = GuardSyntax{
+    .if_nodes = &.{"if_statement"},
+    .condition_field = "condition",
+    .body_field = "body",
+    .else_field = "",
+    .early_return = "{ return; }",
+    .invert_prefix = "!",
+};
+
 fn syntaxFor(lang: grammars.Language) ?*const GuardSyntax {
     return switch (lang) {
         .typescript, .tsx => &typescript_syntax,
+        .go => &go_syntax,
+        .zig => &zig_syntax,
         else => null,
     };
 }
 
 pub fn supportedLanguages() []const grammars.Language {
-    return &.{ .typescript, .tsx };
+    return &.{ .typescript, .tsx, .go, .zig };
 }
 
 pub fn collect(
@@ -292,8 +316,16 @@ fn isLastNamedChild(node: bindings.TSNode) bool {
 fn isVoidCapable(lang: grammars.Language, source: []const u8, boundary: bindings.TSNode) bool {
     return switch (lang) {
         .typescript, .tsx => tsVoidCapable(source, boundary),
+        .go => boundary.childByFieldName("result").isNull(),
+        .zig => zigVoidCapable(source, boundary),
         else => false,
     };
+}
+
+fn zigVoidCapable(source: []const u8, boundary: bindings.TSNode) bool {
+    const return_type = boundary.childByFieldName("type");
+    if (return_type.isNull()) return true;
+    return std.mem.eql(u8, std.mem.trim(u8, return_type.slice(source), " \t\r\n"), "void");
 }
 
 fn tsVoidCapable(source: []const u8, boundary: bindings.TSNode) bool {
@@ -626,24 +658,58 @@ fn findFirstNode(node: bindings.TSNode, node_type: []const u8) ?bindings.TSNode 
     return null;
 }
 
-test "typescript guard grammar fields resolve" {
-    const source = "function process(user: User): void {\n  if (user.isActive) {\n    sendEmail(user);\n  }\n}\n";
+test "guard grammar fields resolve against embedded grammars" {
+    const samples = [_]struct {
+        lang: grammars.Language,
+        source: []const u8,
+        body_type: []const u8,
+    }{
+        .{
+            .lang = .typescript,
+            .source = "function process(user: User): void {\n  if (user.isActive) {\n    sendEmail(user);\n  }\n}\n",
+            .body_type = "statement_block",
+        },
+        .{
+            .lang = .tsx,
+            .source = "function process(user: User): void {\n  if (user.isActive) {\n    sendEmail(user);\n  }\n}\n",
+            .body_type = "statement_block",
+        },
+        .{
+            .lang = .go,
+            .source = "package main\n\nfunc process(user User) {\n    if user.IsActive {\n        sendEmail(user)\n    }\n}\n",
+            .body_type = "block",
+        },
+        .{
+            .lang = .zig,
+            .source = "fn process(user: User) void {\n    if (user.is_active) {\n        send_email(user);\n    }\n}\n",
+            .body_type = "block_expression",
+        },
+    };
 
-    var parsed = try parseSource(source, .typescript);
-    defer parsed.deinit();
+    for (samples) |sample| {
+        var parsed = try parseSource(sample.source, sample.lang);
+        defer parsed.deinit();
 
-    const syntax = syntaxFor(.typescript).?;
-    const if_node = findFirstNode(parsed.root, "if_statement") orelse return error.NoIfNode;
+        const syntax = syntaxFor(sample.lang).?;
+        const if_node = findFirstNode(parsed.root, syntax.if_nodes[0]) orelse return error.NoIfNode;
 
-    const condition = if_node.childByFieldName(syntax.condition_field);
-    try std.testing.expect(!condition.isNull());
-    try std.testing.expectEqualStrings("parenthesized_expression", condition.getType());
+        const condition = if_node.childByFieldName(syntax.condition_field);
+        try std.testing.expect(!condition.isNull());
 
-    const body = if_node.childByFieldName(syntax.body_field);
-    try std.testing.expect(!body.isNull());
-    try std.testing.expectEqualStrings("statement_block", body.getType());
+        const body = if_node.childByFieldName(syntax.body_field);
+        try std.testing.expect(!body.isNull());
+        try std.testing.expectEqualStrings(sample.body_type, body.getType());
 
-    try std.testing.expect(if_node.childByFieldName(syntax.else_field).isNull());
+        if (syntax.else_field.len > 0) {
+            try std.testing.expect(if_node.childByFieldName(syntax.else_field).isNull());
+        }
+        try std.testing.expect(!hasElseBranch(syntax, if_node));
+        try std.testing.expect(isFunctionBoundary(sample.lang, enclosingFunction(sample.lang, if_node).?));
+    }
+
+    for (supportedLanguages()) |lang| {
+        try std.testing.expect(syntaxFor(lang) != null);
+    }
 }
 
 test "guard extraction flattens tail-position void function" {
@@ -729,4 +795,91 @@ test "tsx files use the same guard transform" {
     const source = "function process(user: User): void {\n  if (user.isActive) {\n    sendEmail(user);\n  }\n}\n";
     const expected = "function process(user: User): void {\n  if (!(user.isActive)) { return; }\n  sendEmail(user);\n}\n";
     try expectGuarded(source, .tsx, expected);
+}
+
+test "guard extraction flattens tail-position void Go function" {
+    const source = "package main\n\nfunc process(user User) {\n    if user.IsActive {\n        sendEmail(user)\n    }\n}\n";
+    const expected = "package main\n\nfunc process(user User) {\n    if (!(user.IsActive)) { return }\n    sendEmail(user)\n}\n";
+    try expectGuarded(source, .go, expected);
+}
+
+test "Go statement after the if stays advisory" {
+    const source = "package main\n\nfunc process(user User) {\n    if user.IsActive {\n        sendEmail(user)\n    }\n    logDone()\n}\n";
+    try expectNoGuards(source, .go);
+}
+
+test "Go if inside for loop stays advisory" {
+    const source = "package main\n\nfunc process(users []User) {\n    for _, user := range users {\n        if user.IsActive {\n            sendEmail(user)\n        }\n    }\n}\n";
+    try expectNoGuards(source, .go);
+}
+
+test "Go if inside expression switch stays advisory" {
+    const source = "package main\n\nfunc process(x int) {\n    switch x {\n    case 1:\n        if check(x) {\n            sendEmail(x)\n        }\n    }\n}\n";
+    try expectNoGuards(source, .go);
+}
+
+test "Go if inside type switch stays advisory" {
+    const source = "package main\n\nfunc process(v any) {\n    switch v.(type) {\n    case int:\n        if check(v) {\n            sendEmail(v)\n        }\n    }\n}\n";
+    try expectNoGuards(source, .go);
+}
+
+test "Go if inside select statement stays advisory" {
+    const source = "package main\n\nfunc process(ch chan int) {\n    select {\n    case <-ch:\n        if check(ch) {\n            sendEmail(ch)\n        }\n    }\n}\n";
+    try expectNoGuards(source, .go);
+}
+
+test "Go function with result stays advisory" {
+    const source = "package main\n\nfunc process(user User) error {\n    if user.IsActive {\n        sendEmail(user)\n    }\n}\n";
+    try expectNoGuards(source, .go);
+}
+
+test "Go if with initializer stays advisory" {
+    const source = "package main\n\nfunc process() {\n    if err := sendEmail(); err != nil {\n        logDone()\n    }\n}\n";
+    try expectNoGuards(source, .go);
+}
+
+test "guard extraction flattens tail-position void Zig function" {
+    const source = "fn process(user: User) void {\n    if (user.is_active) {\n        send_email(user);\n    }\n}\n";
+    const expected = "fn process(user: User) void {\n    if (!(user.is_active)) { return; }\n    send_email(user);\n}\n";
+    try expectGuarded(source, .zig, expected);
+}
+
+test "Zig statement after the if stays advisory" {
+    const source = "fn process(user: User) void {\n    if (user.is_active) {\n        send_email(user);\n    }\n    log_done();\n}\n";
+    try expectNoGuards(source, .zig);
+}
+
+test "Zig if inside for loop stays advisory" {
+    const source = "fn process(users: []const User) void {\n    for (users) |user| {\n        if (user.is_active) {\n            send_email(user);\n        }\n    }\n}\n";
+    try expectNoGuards(source, .zig);
+}
+
+test "Zig if inside while loop stays advisory" {
+    const source = "fn process(flag: bool) void {\n    while (flag) {\n        if (check()) {\n            send_email();\n        }\n    }\n}\n";
+    try expectNoGuards(source, .zig);
+}
+
+test "Zig if inside switch prong stays advisory" {
+    const source = "fn classify(value: u32) void {\n    switch (value) {\n        1 => {\n            if (check(value)) {\n                send(value);\n            }\n        },\n        else => {},\n    }\n}\n";
+    try expectNoGuards(source, .zig);
+}
+
+test "Zig if expression assigned to a value stays advisory" {
+    const source = "fn pick(flag: bool) u32 {\n    const value = if (flag) 1 else 2;\n    return value;\n}\n";
+    try expectNoGuards(source, .zig);
+}
+
+test "Zig error-union return type stays advisory" {
+    const source = "fn process(user: User) !void {\n    if (user.is_active) {\n        send_email(user);\n    }\n}\n";
+    try expectNoGuards(source, .zig);
+}
+
+test "Zig if with payload capture stays advisory" {
+    const source = "fn process(opt: ?u8) void {\n    if (opt) |value| {\n        send(value);\n    }\n}\n";
+    try expectNoGuards(source, .zig);
+}
+
+test "Zig if with inline else stays advisory" {
+    const source = "fn process(flag: bool) void {\n    if (flag) {\n        send_email();\n    } else {\n        log_done();\n    }\n}\n";
+    try expectNoGuards(source, .zig);
 }
