@@ -14,6 +14,7 @@ fn printUsage(io: std.Io, stdout: std.Io.File) !void {
         \\  complexity [paths..] Calculate SonarSource cognitive complexity per function
         \\  blast <symbol>       Analyze definition, references, and blast radius risk
         \\  refactor <file>      Execute transactional safe refactor with hash verification
+        \\  plan <path>          List machine-applicable fix proposals for a file or directory
         \\  bootstrap            Initialize environment, state database, and directory
         \\  version              Print zero-noise version
         \\  help                 Show this help message
@@ -78,6 +79,9 @@ pub fn main(init: std.process.Init) !u8 {
     }
     if (std.mem.eql(u8, command, "refactor")) {
         return try zn.cli.refactor.run(allocator, sub_args, io, stdout, stderr);
+    }
+    if (std.mem.eql(u8, command, "plan")) {
+        return try zn.cli.plan.run(allocator, sub_args, io, stdout, stderr);
     }
 
     return handleBuiltinCommand(allocator, command, sub_args, io, stdout, stderr);

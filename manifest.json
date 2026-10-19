@@ -27,7 +27,8 @@
     "audit",
     "complexity",
     "blast",
-    "refactor"
+    "refactor",
+    "plan"
   ],
   "mcp_tools": [
     "inspect_evidence",

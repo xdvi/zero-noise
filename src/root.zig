@@ -58,6 +58,7 @@ pub const cli = struct {
     pub const complexity = @import("cli/complexity.zig");
     pub const blast = @import("cli/blast.zig");
     pub const refactor = @import("cli/refactor.zig");
+    pub const plan = @import("cli/plan.zig");
 };
 
 pub fn getSqliteVersion() [*:0]const u8 {
@@ -105,4 +106,5 @@ test {
     _ = @import("cli/complexity.zig");
     _ = @import("cli/blast.zig");
     _ = @import("cli/refactor.zig");
+    _ = @import("cli/plan.zig");
 }
